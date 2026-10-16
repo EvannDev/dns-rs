@@ -211,10 +211,10 @@ impl std::fmt::Display for ListSource {
 impl ListSource {
     /// The list's URL without credentials, query or fragment, for metrics and
     /// the API: neither has authentication, and private list URLs may carry a
-    /// token. When something
-    /// was removed, a short fingerprint of the full URL is appended, so lists
-    /// that differ only by it (`?list=ads`, `?list=trackers`) keep separate
-    /// series; 32 bits do not reveal the removed part.
+    /// token. When something was removed, a short fingerprint of the full URL
+    /// is appended, so lists that differ only by it (`?list=ads`,
+    /// `?list=trackers`) keep separate series; 32 bits do not reveal the
+    /// removed part.
     #[must_use]
     pub fn label(&self) -> String {
         let ListSource::Http(full) = self else {
@@ -963,6 +963,27 @@ mod tests {
             allowed("excepted.example.com").as_deref(),
             Some("https://lists.example/hosts")
         );
+    }
+
+    // The operator wrote it in the configuration: that is the origin to show.
+    #[test]
+    fn rule_in_config_and_list_is_attributed_to_the_config() {
+        let config = Config::from_toml("[blocking]\ndeny = ['ads.example.com']").unwrap();
+        let list = ParsedList {
+            deny: vec![Rule::Exact("ads.example.com".to_owned())],
+            origin: "https://lists.example/hosts".to_owned(),
+            ..ParsedList::default()
+        };
+
+        let policy = config.blocking.policy(&[list]).unwrap();
+
+        let origin = policy
+            .filter
+            .explain("ads.example.com")
+            .denied_by
+            .unwrap()
+            .origin;
+        assert_eq!(origin, "config:deny");
     }
 
     #[test]

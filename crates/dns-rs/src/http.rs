@@ -13,13 +13,9 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 
 use crate::blocking::BlockingMode;
-use crate::filter::{Explanation, Match, Verdict};
+use crate::filter::{Match, Verdict};
+use crate::handler::PolicyView;
 use crate::metrics::Metrics;
-
-/// Read access to the blocking policy in force, for `/api/v1/check`.
-pub trait PolicyView: Send + Sync {
-    fn explain(&self, domain: &str) -> (BlockingMode, Explanation);
-}
 
 /// What the endpoint serves, shared with the rest of dns-rs.
 #[derive(Clone)]
@@ -92,8 +88,8 @@ async fn check(State(state): State<HttpState>, Path(domain): Path<String>) -> Re
 /// most 253 bytes, an optional trailing dot.
 fn is_query_name(name: &str) -> bool {
     let name = name.strip_suffix('.').unwrap_or(name);
-    !name.is_empty()
-        && name.len() <= 253
+    // An empty name is one empty label, rejected below.
+    name.len() <= 253
         && name.split('.').all(|label| {
             (1..=63).contains(&label.len())
                 && label
@@ -118,4 +114,55 @@ async fn metrics(State(state): State<HttpState>) -> impl IntoResponse {
         )],
         state.metrics.encode(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_names_within_dns_limits_are_accepted() {
+        let label_63 = "a".repeat(63);
+        // 4 labels of 63 + 3 dots = 255; trim to exactly 253 bytes.
+        let name_253 = format!("{label_63}.{label_63}.{label_63}.{}", "a".repeat(61));
+        assert_eq!(name_253.len(), 253);
+
+        for name in [
+            "example.com",
+            "example.com.",
+            "_dmarc.example.com",
+            "localhost",
+            &format!("{label_63}.com"),
+            &name_253,
+        ] {
+            assert!(is_query_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn query_names_beyond_dns_limits_are_rejected() {
+        let label_64 = "a".repeat(64);
+        let name_254 = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "a".repeat(63),
+            "a".repeat(63),
+            "a".repeat(62)
+        );
+        assert_eq!(name_254.len(), 254);
+
+        for name in [
+            "",
+            ".",
+            "..",
+            "a..b",
+            ".example.com",
+            "exa mple.com",
+            "ex%41mple.com",
+            &format!("{label_64}.com"),
+            &name_254,
+        ] {
+            assert!(!is_query_name(name), "{name:?}");
+        }
+    }
 }

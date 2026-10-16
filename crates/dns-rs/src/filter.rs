@@ -52,9 +52,12 @@ pub struct Match {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Explanation {
     pub verdict: Verdict,
-    /// The first deny rule that matches, if any.
+    /// The most specific deny rule that matches, if any: exact, then the
+    /// closest subtree, then a regex (the first in lexicographic order, not
+    /// in configuration order).
     pub denied_by: Option<Match>,
-    /// The first allow rule that matches, if any; it wins over deny rules.
+    /// The most specific allow rule that matches, chosen the same way; it
+    /// wins over deny rules.
     pub allowed_by: Option<Match>,
 }
 
@@ -88,12 +91,15 @@ impl FilterBuilder {
         self
     }
 
-    /// Adds a deny rule of unknown origin.
+    /// Adds a deny rule of unknown origin (tests only: production rules
+    /// always say where they come from).
+    #[cfg(test)]
     pub fn deny(&mut self, rule: Rule) -> &mut Self {
         self.deny_from(rule, "")
     }
 
-    /// Adds an allow rule of unknown origin.
+    /// Adds an allow rule of unknown origin (tests only).
+    #[cfg(test)]
     pub fn allow(&mut self, rule: Rule) -> &mut Self {
         self.allow_from(rule, "")
     }
@@ -205,6 +211,10 @@ impl Rules {
     }
 
     fn found(&self, kind: MatchKind, rule: String, origin: OriginId) -> Match {
+        debug_assert!(
+            usize::try_from(origin).is_ok_and(|index| index < self.origins.len()),
+            "origin ids come from this rule set"
+        );
         let origin = usize::try_from(origin)
             .ok()
             .and_then(|index| self.origins.get(index))
