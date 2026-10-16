@@ -692,6 +692,24 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn successful_refresh_updates_rules() {
+            let setup = Setup::new();
+            setup.write("list.txt", "a.example.com\n");
+            setup.config(&format!(
+                "[blocking]\nlists = ['{}']",
+                setup.list_url("list.txt")
+            ));
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            setup.write("list.txt", "a.example.com\nb.example.com\nc.example.com\n");
+            reloader.refresh_lists().await;
+
+            assert!(has(&setup, "dns_rs_blocking_rules 3"), "{}", text(&setup));
+            let rules = format!("{} 3", list_series(&setup, "dns_rs_blocklist_rules"));
+            assert!(has(&setup, &rules), "{}", text(&setup));
+        }
+
+        #[tokio::test]
         async fn removed_list_leaves_no_series() {
             let setup = Setup::new();
             setup.write("list.txt", "a.example.com\n");

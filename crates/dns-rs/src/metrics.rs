@@ -3,7 +3,6 @@
 //! Each replica exposes its own counters; Prometheus sums them. Label values
 //! are bounded: nothing a client sends can create new series (ADR 0002).
 
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hickory_proto::op::ResponseCode;
@@ -218,9 +217,16 @@ fn list_label(source: &ListSource) -> String {
     let _ = url.set_password(None);
     url.set_query(None);
     url.set_fragment(None);
-    let mut hasher = DefaultHasher::new();
-    full.hash(&mut hasher);
-    format!("{url}#{:08x}", hasher.finish() & 0xffff_ffff)
+    format!("{url}#{:08x}", fnv1a_64(full.as_bytes()) & 0xffff_ffff)
+}
+
+/// FNV-1a, 64 bits: a fixed algorithm, so every build and every replica
+/// gives a list the same label (std's `DefaultHasher` may change between
+/// Rust versions).
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 fn saturating_i64(value: usize) -> i64 {
@@ -298,7 +304,6 @@ impl Metrics {
         self.blocking_rules.set(saturating_i64(rules));
     }
 
-    /// A list loaded with `rules` deny rules at `at`.
     /// Takes the time from `clock` instead of the system clock (tests).
     #[must_use]
     pub fn with_clock(mut self, clock: impl Fn() -> SystemTime + Send + Sync + 'static) -> Self {
@@ -306,6 +311,7 @@ impl Metrics {
         self
     }
 
+    /// A list just loaded with `rules` deny rules, at the clock's time.
     pub fn record_list_loaded(&self, source: &ListSource, rules: usize) {
         let at = (self.clock)();
         let labels = ListLabels {
@@ -652,6 +658,24 @@ mod tests {
                 metrics
                     .encode()
                     .contains(r#"list="https://lists.example/hosts"}"#)
+            );
+        }
+
+        // The fingerprint must be the same on every build and replica, or
+        // series of one list would split during a rolling update.
+        #[test]
+        fn list_fingerprint_is_stable_across_builds() {
+            let metrics = Metrics::new();
+
+            metrics.record_list_loaded(&source("https://lists.example/hosts?token=abc"), 1);
+
+            // FNV-1a 64 of the full URL, low 32 bits.
+            assert!(
+                metrics
+                    .encode()
+                    .contains(r#"list="https://lists.example/hosts#125ac8e4"}"#),
+                "{}",
+                metrics.encode()
             );
         }
 
