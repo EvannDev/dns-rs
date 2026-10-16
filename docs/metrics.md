@@ -22,6 +22,13 @@ Prometheus to reach it with a NetworkPolicy.
 | `dns_rs_queries_total` | counter | `source`, `rcode`, `type` |
 | `dns_rs_query_duration_seconds` | histogram | `source` |
 | `dns_rs_build_info` | info | `version` |
+| `dns_rs_blocking_rules` | gauge | none |
+| `dns_rs_blocklist_rules` | gauge | `list` |
+| `dns_rs_blocklist_last_success_timestamp_seconds` | gauge | `list` |
+| `dns_rs_blocklist_failures_total` | counter | `list`, `reason` |
+| `dns_rs_config_reloads_total` | counter | `result` |
+| `dns_rs_config_valid` | gauge | none |
+| `dns_rs_cache_entries` | gauge | none |
 
 The histogram has 16 buckets from 50 µs, doubling up to about 1.6 s.
 
@@ -35,8 +42,29 @@ Label values:
   `NS`, `PTR`, `SOA`, `SRV`, `SVCB`, `TXT`, or `other`. A request without a
   question has `type="none"`.
 
-The label sets are fixed, so a client cannot create new series. See
+- `list`: the blocklist as configured, as a `file://` path or a URL. For
+  URLs, credentials, query string and fragment are removed, because the
+  endpoint has no authentication and private list URLs may carry a token.
+  Series of a list removed from the configuration are dropped on reload.
+- `reason` (blocklist failures): `timeout`, `too_large`, `status` or
+  `failed`.
+- `result` (config reloads): `applied` or `rejected`.
+
+The label sets are fixed or come from the configuration, so a client cannot
+create new series. See
 [ADR 0011](adr/0011-per-replica-bounded-metrics.md).
+
+## State metrics
+
+| Metric | Meaning |
+|---|---|
+| `dns_rs_blocking_rules` | Deny rules in the blocking policy in force |
+| `dns_rs_blocklist_rules` | Deny rules from each list, as last loaded. A list that fails to refresh keeps its last valid rules |
+| `dns_rs_blocklist_last_success_timestamp_seconds` | Unix time of the last successful load of each list; alert when it gets old |
+| `dns_rs_blocklist_failures_total` | Failed list loads, by reason |
+| `dns_rs_config_reloads_total` | Configuration changes `applied` or `rejected`. Unchanged files are not counted, and the same rejection is counted once |
+| `dns_rs_config_valid` | `1` while the configuration file, as last read, is valid; `0` after an invalid or missing file. It returns to `1` as soon as a valid file is read, even one identical to the applied configuration |
+| `dns_rs_cache_entries` | Responses held in the cache, read at each scrape |
 
 ## Prometheus and Kubernetes
 
