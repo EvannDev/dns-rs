@@ -26,6 +26,10 @@ A few can be overridden by environment variables, handy in containers:
 | `DNS_RS_CACHE_SIZE` | `cache.size` |
 | `RUST_LOG` | Log filter, default `info`; `dns_rs::query=off` silences the query log |
 
+More in [`docs/`](docs/README.md): configuration, blocklists, logging and
+the architecture decision records. Changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
+
 ## Develop
 
 The project is test-driven: see [CLAUDE.md](CLAUDE.md) for the rules.
