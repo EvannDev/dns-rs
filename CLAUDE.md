@@ -39,7 +39,7 @@ Single crate for now (`crates/dns-rs`), split into crates only when needed.
 | `blocking` | Blocking modes and synthesized answers for blocked names |
 | `cache` | TTL-aware response cache, negative caching (RFC 2308) |
 | `filter` | Pure allow/deny engine: exact, subtree (`*.domain`), regex; allow wins |
-| `lists` | Blocklist parsing: hosts, plain domains, ABP `\|\|domain^` / `@@` |
+| `lists` | Blocklist parsing: hosts, plain domains, `*.domain`, ABP `\|\|domain^` / `@@`; bare domains exact or with subdomains (`BareDomains`) |
 | `upstream` | `Upstream` trait; `DnsUpstream` = UDP with TCP fallback, anti-spoofing |
 | `wire` | DNS over TCP length-prefix framing |
 | `config` | TOML file (`DNS_RS_CONFIG`) with `DNS_RS_*` overrides; validation; builds the `Policy` |

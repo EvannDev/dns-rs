@@ -27,9 +27,17 @@ mode = "null"
 # time). A list that fails (error, timeout after 30 s, over 64 MiB) is
 # skipped and logged; DNS keeps working. Prefer https:// over http://:
 # redirects from HTTPS down to HTTP are refused.
+#
+# A domain listed bare (`example.com`, or a hosts entry) blocks that name
+# only, as in Pi-hole. Lists meant to cover subdomains too (OISD
+# `domainswild2`, HaGeZi "wildcard domains") need the table form with
+# `wildcard = true`. `*.example.com` and `||example.com^` lines always cover
+# subdomains.
+#
 # Example (default: none):
 # lists = [
 #   "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+#   { url = "https://big.oisd.nl/domainswild2", wildcard = true },
 #   "file:///etc/dns-rs/lists/mine.txt",
 # ]
 lists = []

@@ -30,8 +30,8 @@ async fn plain_http_list_logs_a_warning_and_https_does_not() {
 
     loader
         .load(&[
-            ListSource::Http(format!("http://{closed}/plain")),
-            ListSource::Http(format!("https://{closed}/secure")),
+            ListSource::Http(format!("http://{closed}/plain")).into(),
+            ListSource::Http(format!("https://{closed}/secure")).into(),
         ])
         .await;
 

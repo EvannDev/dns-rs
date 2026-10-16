@@ -9,8 +9,8 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::config::ListSource;
-use crate::lists::{ParsedList, parse_list};
+use crate::config::{ListConfig, ListSource};
+use crate::lists::{ParsedList, parse_list_with};
 
 /// Bounds on list downloads, so no list can stall startup or exhaust memory.
 #[derive(Debug, Clone, Copy)]
@@ -75,10 +75,14 @@ impl ListLoader {
     /// Loads and parses every list, at most `limits.concurrency` at a time.
     /// A list that cannot be loaded is logged and skipped: DNS must keep
     /// working without it. Lists keep the order of `sources`.
-    pub async fn load(&self, sources: &[ListSource]) -> Vec<ParsedList> {
+    pub async fn load(&self, lists: &[ListConfig]) -> Vec<ParsedList> {
         let permits = Arc::new(Semaphore::new(self.limits.concurrency.max(1)));
         let mut tasks = JoinSet::new();
-        for (index, source) in sources.iter().cloned().enumerate() {
+        for (index, config) in lists.iter().cloned().enumerate() {
+            let ListConfig {
+                source,
+                bare_domains,
+            } = config;
             if source.is_insecure() {
                 tracing::warn!(list = %source, "blocklist fetched over plain HTTP, prefer HTTPS");
             }
@@ -87,12 +91,15 @@ impl ListLoader {
             tasks.spawn(async move {
                 // The semaphore is never closed, so acquiring cannot fail.
                 let _permit = permits.acquire_owned().await;
-                let result = loader.fetch(&source).await.map(|text| parse_list(&text));
+                let result = loader
+                    .fetch(&source)
+                    .await
+                    .map(|text| parse_list_with(&text, bare_domains));
                 (index, source, result)
             });
         }
 
-        let mut loaded = Vec::with_capacity(sources.len());
+        let mut loaded = Vec::with_capacity(lists.len());
         while let Some(joined) = tasks.join_next().await {
             match joined {
                 Ok((index, source, Ok(list))) => {
@@ -224,7 +231,9 @@ mod tests {
     use tokio::sync::Barrier;
 
     use super::*;
+    use crate::config::ListConfig;
     use crate::filter::Rule;
+    use crate::lists::BareDomains;
 
     const MAX_BYTES: usize = 1024;
 
@@ -232,6 +241,10 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(content.as_bytes()).unwrap();
         file
+    }
+
+    fn configs(sources: &[ListSource]) -> Vec<ListConfig> {
+        sources.iter().cloned().map(ListConfig::from).collect()
     }
 
     fn loader() -> ListLoader {
@@ -358,7 +371,9 @@ mod tests {
     async fn file_list_is_read_and_parsed() {
         let file = list_file("0.0.0.0 ads.example.com\n||tracker.example^\n");
 
-        let lists = loader().load(&[ListSource::File(file.path().into())]).await;
+        let lists = loader()
+            .load(&configs(&[ListSource::File(file.path().into())]))
+            .await;
 
         assert_eq!(lists.len(), 1);
         assert_eq!(
@@ -371,14 +386,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wildcard_option_reaches_the_parser() {
+        let file = list_file("ads.example.com\n0.0.0.0 t.example.net\n");
+        let wildcard = ListConfig {
+            source: ListSource::File(file.path().into()),
+            bare_domains: BareDomains::WithSubdomains,
+        };
+
+        let lists = loader().load(&[wildcard]).await;
+
+        assert_eq!(
+            lists[0].deny,
+            vec![
+                Rule::Subtree("ads.example.com".to_owned()),
+                Rule::Subtree("t.example.net".to_owned()),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn unreadable_list_is_skipped() {
         let file = list_file("ads.example.com");
 
         let lists = loader()
-            .load(&[
+            .load(&configs(&[
                 ListSource::File("/nonexistent/list.txt".into()),
                 ListSource::File(file.path().into()),
-            ])
+            ]))
             .await;
 
         assert_eq!(lists.len(), 1);
@@ -404,7 +438,7 @@ mod tests {
     async fn http_list_is_downloaded_and_parsed() {
         let addr = http_server(Reply::Ok(200, "0.0.0.0 ads.example.com\n".to_owned())).await;
 
-        let lists = loader().load(&[http(addr, "/hosts")]).await;
+        let lists = loader().load(&configs(&[http(addr, "/hosts")])).await;
 
         assert_eq!(lists.len(), 1);
         assert_eq!(
@@ -483,7 +517,9 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"ads.example.com\n\xFF\n").unwrap();
 
-        let lists = loader().load(&[ListSource::File(file.path().into())]).await;
+        let lists = loader()
+            .load(&configs(&[ListSource::File(file.path().into())]))
+            .await;
 
         assert_eq!(
             lists[0].deny,
@@ -566,11 +602,11 @@ mod tests {
         let file = list_file("b.example.com");
 
         let lists = loader()
-            .load(&[
+            .load(&configs(&[
                 http(good, "/a"),
                 http(bad, "/b"),
                 ListSource::File(file.path().into()),
-            ])
+            ]))
             .await;
 
         let deny: Vec<_> = lists.iter().map(|list| list.deny.clone()).collect();
@@ -595,7 +631,9 @@ mod tests {
         .await;
         let b = http_server(Reply::AfterBarrier(barrier, "b.example.com".to_owned())).await;
 
-        let lists = loader().load(&[http(a, "/a"), http(b, "/b")]).await;
+        let lists = loader()
+            .load(&configs(&[http(a, "/a"), http(b, "/b")]))
+            .await;
 
         assert_eq!(lists.len(), 2);
     }
@@ -607,7 +645,7 @@ mod tests {
 
         let lists = tokio::time::timeout(
             Duration::from_secs(5),
-            loader_with(0).load(&[ListSource::File(file.path().into())]),
+            loader_with(0).load(&configs(&[ListSource::File(file.path().into())])),
         )
         .await
         .expect("load must not deadlock");
@@ -625,7 +663,7 @@ mod tests {
         .await;
         let sources: Vec<_> = (0..6).map(|i| http(addr, &format!("/{i}"))).collect();
 
-        let lists = loader_with(2).load(&sources).await;
+        let lists = loader_with(2).load(&configs(&sources)).await;
 
         assert_eq!(lists.len(), 6);
         assert!(

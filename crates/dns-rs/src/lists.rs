@@ -32,9 +32,27 @@ pub struct ParsedList {
     pub skipped: usize,
 }
 
+/// What a domain listed without syntax (`example.com`, or a hosts entry)
+/// blocks. `*.example.com` lines always block the domain and its subdomains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BareDomains {
+    /// That name only, as in Pi-hole and hosts files.
+    #[default]
+    Exact,
+    /// The name and its subdomains, as lists like OISD `domainswild2` intend.
+    WithSubdomains,
+}
+
 /// Parses a list, keeping every line it understands and counting the others.
+/// Bare domains are exact matches.
 #[must_use]
 pub fn parse_list(text: &str) -> ParsedList {
+    parse_list_with(text, BareDomains::Exact)
+}
+
+/// Parses a list whose bare domains mean `bare`.
+#[must_use]
+pub fn parse_list_with(text: &str, bare: BareDomains) -> ParsedList {
     let mut list = ParsedList::default();
     for line in text.lines() {
         let line = strip_comment(line).trim();
@@ -52,7 +70,7 @@ pub fn parse_list(text: &str) -> ParsedList {
                 None => list.skipped += 1,
             }
         } else {
-            parse_hosts_or_domain(line, &mut list);
+            parse_hosts_or_domain(line, bare, &mut list);
         }
     }
     list
@@ -75,8 +93,8 @@ fn adblock_domain(rule: &str) -> Option<&str> {
     is_valid_domain(domain).then_some(domain)
 }
 
-/// A hosts line (`<ip> <name>...`) or a single domain.
-fn parse_hosts_or_domain(line: &str, list: &mut ParsedList) {
+/// A hosts line (`<ip> <name>...`), a single domain or a `*.domain`.
+fn parse_hosts_or_domain(line: &str, bare: BareDomains, list: &mut ParsedList) {
     let mut tokens = line.split_whitespace();
     let Some(first) = tokens.next() else {
         return;
@@ -84,6 +102,14 @@ fn parse_hosts_or_domain(line: &str, list: &mut ParsedList) {
     let names: Vec<&str> = if is_address(first) {
         tokens.collect()
     } else if tokens.next().is_none() {
+        if let Some(domain) = first.strip_prefix("*.") {
+            if is_valid_domain(domain) {
+                list.deny.push(Rule::Subtree(domain.to_owned()));
+            } else {
+                list.skipped += 1;
+            }
+            return;
+        }
         vec![first]
     } else {
         list.skipped += 1;
@@ -94,7 +120,10 @@ fn parse_hosts_or_domain(line: &str, list: &mut ParsedList) {
             continue;
         }
         if is_valid_domain(name) {
-            list.deny.push(Rule::Exact(name.to_owned()));
+            list.deny.push(match bare {
+                BareDomains::Exact => Rule::Exact(name.to_owned()),
+                BareDomains::WithSubdomains => Rule::Subtree(name.to_owned()),
+            });
         } else {
             list.skipped += 1;
         }
@@ -143,6 +172,60 @@ mod tests {
             vec![exact("ads.example.com"), exact("tracker.example.net")]
         );
         assert_eq!(list.skipped, 0);
+    }
+
+    #[test]
+    fn wildcard_line_is_a_subtree() {
+        let list = parse_list("*.ads.example.com");
+
+        assert_eq!(list.deny, vec![subtree("ads.example.com")]);
+        assert_eq!(list.skipped, 0);
+    }
+
+    #[test]
+    fn wildcard_over_a_tld_is_skipped() {
+        let list = parse_list("*.com");
+
+        assert_eq!(list.deny, []);
+        assert_eq!(list.skipped, 1);
+    }
+
+    // Hosts files map names to addresses; a wildcard there is a mistake.
+    #[test]
+    fn wildcard_in_a_hosts_line_is_skipped() {
+        let list = parse_list("0.0.0.0 *.ads.example.com");
+
+        assert_eq!(list.deny, []);
+        assert_eq!(list.skipped, 1);
+    }
+
+    #[test]
+    fn bare_domains_can_cover_subdomains() {
+        let list = parse_list_with("ads.example.com", BareDomains::WithSubdomains);
+
+        assert_eq!(list.deny, vec![subtree("ads.example.com")]);
+    }
+
+    #[test]
+    fn hosts_entries_can_cover_subdomains() {
+        let list = parse_list_with(
+            "0.0.0.0 ads.example.com t.example.net",
+            BareDomains::WithSubdomains,
+        );
+
+        assert_eq!(
+            list.deny,
+            vec![subtree("ads.example.com"), subtree("t.example.net")]
+        );
+    }
+
+    #[test]
+    fn exact_is_the_default_for_bare_domains() {
+        assert_eq!(BareDomains::default(), BareDomains::Exact);
+        assert_eq!(
+            parse_list("ads.example.com").deny,
+            vec![exact("ads.example.com")]
+        );
     }
 
     #[test]
