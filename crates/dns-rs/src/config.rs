@@ -9,6 +9,7 @@ use std::time::Duration;
 use regex::{Regex, RegexSet};
 use reqwest::Url;
 use serde::Deserialize;
+use subtle::ConstantTimeEq;
 
 use crate::blocking::{BlockingMode, Policy};
 use crate::filter::{FilterBuilder, Rule};
@@ -79,17 +80,12 @@ impl std::fmt::Debug for ApiToken {
 }
 
 impl ApiToken {
-    /// Compares in constant time for a given length, so the response time
-    /// does not tell how much of a guess was right.
+    /// Compares in constant time for a given length (`subtle` keeps the
+    /// compiler from short-circuiting), so the response time does not tell
+    /// how much of a guess was right.
     #[must_use]
     pub fn matches(&self, candidate: &str) -> bool {
-        let (expected, candidate) = (self.0.as_bytes(), candidate.as_bytes());
-        expected.len() == candidate.len()
-            && expected
-                .iter()
-                .zip(candidate)
-                .fold(0, |difference, (a, b)| difference | (a ^ b))
-                == 0
+        self.0.as_bytes().ct_eq(candidate.as_bytes()).into()
     }
 }
 
