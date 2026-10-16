@@ -81,7 +81,7 @@ fn parse_hosts_or_domain(line: &str, list: &mut ParsedList) {
     let Some(first) = tokens.next() else {
         return;
     };
-    let names: Vec<&str> = if first.parse::<IpAddr>().is_ok() {
+    let names: Vec<&str> = if is_address(first) {
         tokens.collect()
     } else if tokens.next().is_none() {
         vec![first]
@@ -90,7 +90,7 @@ fn parse_hosts_or_domain(line: &str, list: &mut ParsedList) {
         return;
     };
     for name in names {
-        if HOSTS_BOILERPLATE.contains(&name) || name.parse::<IpAddr>().is_ok() {
+        if HOSTS_BOILERPLATE.contains(&name) || is_address(name) {
             continue;
         }
         if is_valid_domain(name) {
@@ -101,8 +101,16 @@ fn parse_hosts_or_domain(line: &str, list: &mut ParsedList) {
     }
 }
 
+/// An IP address, possibly with an IPv6 zone ID (`fe80::1%lo0`).
+fn is_address(token: &str) -> bool {
+    let address = token
+        .split_once('%')
+        .map_or(token, |(address, _zone)| address);
+    address.parse::<IpAddr>().is_ok()
+}
+
 /// At least two labels of letters, digits, `-` or `_`, within DNS limits.
-fn is_valid_domain(domain: &str) -> bool {
+pub(crate) fn is_valid_domain(domain: &str) -> bool {
     let domain = domain.strip_suffix('.').unwrap_or(domain);
     domain.len() <= MAX_DOMAIN_LEN
         && domain.contains('.')
@@ -152,6 +160,15 @@ mod tests {
                 exact("d.example.com"),
             ]
         );
+    }
+
+    // StevenBlack's hosts file ships `fe80::1%lo0 localhost`.
+    #[test]
+    fn ipv6_with_zone_id_is_a_hosts_address() {
+        let list = parse_list("fe80::1%lo0 localhost\nfe80::1%lo0 ads.example.com");
+
+        assert_eq!(list.deny, vec![exact("ads.example.com")]);
+        assert_eq!(list.skipped, 0);
     }
 
     #[test]

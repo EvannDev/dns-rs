@@ -1,94 +1,17 @@
 //! End to end: a real client talks to dns-rs, which forwards to a fake upstream.
 
-use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+mod common;
 
-use dns_rs::cache::DnsCache;
-use dns_rs::handler::Handler;
-use dns_rs::server::{serve_tcp, serve_udp};
-use dns_rs::upstream::DnsUpstream;
+use std::net::Ipv4Addr;
+use std::sync::atomic::Ordering;
+
+use common::{ANSWER, query, start_server, start_server_with_policy, udp_exchange};
+use dns_rs::config::Config;
 use dns_rs::wire::{read_tcp_message, write_tcp_message};
-use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+use hickory_proto::op::{Message, MessageType, ResponseCode};
+use hickory_proto::rr::RData;
 use hickory_proto::rr::rdata::A;
-use hickory_proto::rr::{Name, RData, Record, RecordType};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::time::timeout;
-
-const ANSWER: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
-
-/// Fake upstream answering every A query with [`ANSWER`]; counts queries.
-async fn fake_upstream() -> (SocketAddr, Arc<AtomicUsize>) {
-    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let addr = socket.local_addr().unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&calls);
-    tokio::spawn(async move {
-        let mut buf = [0u8; 4096];
-        loop {
-            let (len, peer) = socket.recv_from(&mut buf).await.unwrap();
-            counter.fetch_add(1, Ordering::SeqCst);
-            let request = Message::from_vec(&buf[..len]).unwrap();
-            let mut response = Message::response(request.metadata.id, OpCode::Query);
-            response.add_queries(request.queries.iter().cloned());
-            response.add_answer(Record::from_rdata(
-                request.queries[0].name().clone(),
-                300,
-                RData::A(A(ANSWER)),
-            ));
-            socket
-                .send_to(&response.to_vec().unwrap(), peer)
-                .await
-                .unwrap();
-        }
-    });
-    (addr, calls)
-}
-
-struct TestServer {
-    udp: SocketAddr,
-    tcp: SocketAddr,
-    upstream_calls: Arc<AtomicUsize>,
-}
-
-async fn start_server() -> TestServer {
-    let (upstream_addr, upstream_calls) = fake_upstream().await;
-    let upstream = DnsUpstream::new(upstream_addr, Duration::from_secs(1));
-    let handler = Arc::new(Handler::new(upstream, DnsCache::new(100)));
-
-    let udp_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let server = TestServer {
-        udp: udp_socket.local_addr().unwrap(),
-        tcp: tcp_listener.local_addr().unwrap(),
-        upstream_calls,
-    };
-    tokio::spawn(serve_udp(udp_socket, Arc::clone(&handler)));
-    tokio::spawn(serve_tcp(tcp_listener, handler));
-    server
-}
-
-fn query(id: u16, domain: &str) -> Message {
-    let mut msg = Message::new(id, MessageType::Query, OpCode::Query);
-    msg.metadata.recursion_desired = true;
-    msg.add_query(Query::query(
-        Name::from_ascii(domain).unwrap(),
-        RecordType::A,
-    ));
-    msg
-}
-
-async fn udp_exchange(server: SocketAddr, payload: &[u8]) -> Option<Message> {
-    let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    client.send_to(payload, server).await.unwrap();
-    let mut buf = [0u8; 4096];
-    let len = timeout(Duration::from_millis(500), client.recv(&mut buf))
-        .await
-        .ok()?
-        .unwrap();
-    Some(Message::from_vec(&buf[..len]).unwrap())
-}
+use tokio::net::TcpStream;
 
 fn first_a(response: &Message) -> Ipv4Addr {
     match response.answers[0].data {
@@ -174,4 +97,35 @@ async fn ignores_datagrams_that_are_responses() {
     let response = udp_exchange(server.udp, &msg.to_vec().unwrap()).await;
 
     assert!(response.is_none());
+}
+
+#[tokio::test]
+async fn blocks_domains_denied_by_the_config() {
+    let config = Config::from_toml(
+        r#"
+        [blocking]
+        deny = ["*.ads.example"]
+        "#,
+    )
+    .unwrap();
+    let server = start_server_with_policy(config.blocking.policy(&[]).unwrap()).await;
+
+    let blocked = udp_exchange(server.udp, &query(7, "x.ads.example.").to_vec().unwrap())
+        .await
+        .expect("a response");
+    let allowed = udp_exchange(server.udp, &query(8, "example.com.").to_vec().unwrap())
+        .await
+        .expect("a response");
+
+    assert_eq!(first_a(&blocked), Ipv4Addr::UNSPECIFIED);
+    assert_eq!(first_a(&allowed), ANSWER);
+    assert_eq!(server.upstream_calls.load(Ordering::SeqCst), 1);
+}
+
+// The example file documents the configuration: it must stay valid.
+#[test]
+fn example_config_is_valid() {
+    let text = include_str!("../../../dns-rs.example.toml");
+
+    Config::from_toml(text).unwrap();
 }

@@ -5,6 +5,7 @@ use dns_rs::cache::DnsCache;
 use dns_rs::config::Config;
 use dns_rs::handler::Handler;
 use dns_rs::server::{serve_tcp, serve_udp};
+use dns_rs::sources::load_lists;
 use dns_rs::upstream::DnsUpstream;
 use tokio::net::{TcpListener, UdpSocket};
 use tracing_subscriber::EnvFilter;
@@ -16,16 +17,26 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env()?;
-    let upstream = DnsUpstream::new(config.upstream, config.upstream_timeout);
-    let handler = Arc::new(Handler::new(upstream, DnsCache::new(config.cache_size)));
+    let upstream = DnsUpstream::new(config.upstream.server, config.upstream.timeout);
+    let handler = Arc::new(Handler::new(upstream, DnsCache::new(config.cache.size)));
 
-    let udp = UdpSocket::bind(config.listen)
+    let lists = load_lists(&config.blocking.lists).await;
+    let policy = config.blocking.policy(&lists)?;
+    tracing::info!(
+        rules = policy.filter.deny_count(),
+        mode = ?policy.mode,
+        "blocking policy loaded"
+    );
+    handler.set_policy(policy);
+
+    let listen = config.server.listen;
+    let udp = UdpSocket::bind(listen)
         .await
-        .with_context(|| format!("binding UDP {}", config.listen))?;
-    let tcp = TcpListener::bind(config.listen)
+        .with_context(|| format!("binding UDP {listen}"))?;
+    let tcp = TcpListener::bind(listen)
         .await
-        .with_context(|| format!("binding TCP {}", config.listen))?;
-    tracing::info!(listen = %config.listen, upstream = %config.upstream, "dns-rs started");
+        .with_context(|| format!("binding TCP {listen}"))?;
+    tracing::info!(%listen, upstream = %config.upstream.server, "dns-rs started");
 
     tokio::select! {
         result = serve_udp(udp, Arc::clone(&handler)) => result.context("UDP server")?,
