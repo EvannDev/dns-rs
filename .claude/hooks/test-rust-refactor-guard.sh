@@ -48,4 +48,46 @@ check 2 'cargo publish'
 check 2 'curl -s https://example.org'
 check 2 'wget https://example.org/list'
 
+# Bypasses found in review: global options before the subcommand.
+check 2 'git -C . commit -m x'
+check 2 'git -c user.name=a commit -m x'
+check 2 'git --no-pager push'
+check 2 'cargo +nightly add serde'
+check 2 'cargo --locked update'
+# Bypasses: subcommands missing from a deny list.
+check 2 'git rm crates/dns-rs/src/wire.rs'
+check 2 'git mv a b'
+check 2 'git apply patch.diff'
+check 2 'git switch -c other'
+check 2 'git worktree add ../x'
+check 2 'git config user.name x'
+check 2 'git fetch origin'
+# Bypasses: separators without spaces, subshells, command substitution.
+check 2 'cargo test;git push'
+check 2 'cargo test&&git commit -am x'
+check 2 '(git commit -m x)'
+check 2 'echo $(git push)'
+check 2 'echo `git push`'
+check 2 'bash -c "git push"'
+check 2 'sh -c "git commit"'
+check 2 'env git push'
+check 2 'find . -name x -exec git commit \;'
+# Git options that run arbitrary commands.
+check 2 'git -c core.pager="sh -c x" log'
+check 2 'git grep -O"sh -c x" pattern'
+# Bare programs: empty argument lists must not crash the guard (bash 3.2,
+# the macOS default, treats an empty array as unbound under `set -u`), and
+# a crash must block rather than let the command through.
+check 2 'cargo'
+check 2 'git'
+check 0 'ls'
+# Still allowed: common read-only and build forms.
+check 0 'RUST_LOG=debug cargo test -q'
+check 0 'cd crates/dns-rs && cargo test'
+check 0 'git --no-pager diff --stat'
+check 0 'git -C crates/dns-rs log --oneline -3'
+check 0 'cargo +1.99.1 clippy --all-targets -- -D warnings'
+check 0 'cargo test -q 2>&1 | grep "test result" | head -3'
+check 0 'git show HEAD:crates/dns-rs/src/lib.rs | head -20'
+
 if [ "$failures" -eq 0 ]; then echo "all guard tests passed"; else exit 1; fi

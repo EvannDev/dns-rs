@@ -73,8 +73,9 @@ or upgrading dependencies, changing `rust-toolchain.toml`, lint policy in
 9. **No destructive or outward Git operations.** Never reset, clean,
    force-checkout, discard work you did not write, commit, push or open
    pull requests. Leave the change in the working tree for the caller.
-   A hook (`.claude/hooks/rust-refactor-guard.sh`) enforces this, along
-   with no dependency changes and no network access; do not try to work
+   A hook (`.claude/hooks/rust-refactor-guard.sh`, ADR 0009) allows only
+   cargo build/test/lint commands, read-only git and text tools; if it
+   blocks something you need, say so in your report instead of working
    around it.
 10. **No forced refactor.** If the existing design is clearer and safer,
     say so and leave it intact.
