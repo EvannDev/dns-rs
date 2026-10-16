@@ -37,6 +37,11 @@ All notable changes to dns-rs are documented here. The format is based on
   URL, so lists differing only by query string stay apart (#17).
 - List URLs that do not parse (for example `https://exa mple.org`) are
   rejected when the configuration is validated (#17).
+- `GET /api/v1/check/{domain}` on the HTTP endpoint explains a blocking
+  decision as JSON: `blocked`, `mode`, and the deny and allow rules that
+  matched, each with its kind, text and origin (`config:deny`, `config:allow`,
+  `config:deny_regex`, `config:allow_regex` or the list label). Invalid names
+  get `400` (#18).
 
 ### Changed
 
