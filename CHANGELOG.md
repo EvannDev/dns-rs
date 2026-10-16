@@ -33,7 +33,10 @@ All notable changes to dns-rs are documented here. The format is based on
   `dns_rs_blocklist_failures_total{list,reason}`,
   `dns_rs_config_reloads_total{result}`, `dns_rs_config_valid` and
   `dns_rs_cache_entries`. The `list` label drops credentials, query string
-  and fragment from list URLs (#17).
+  and fragment from list URLs and then ends with a fingerprint of the full
+  URL, so lists differing only by query string stay apart (#17).
+- List URLs that do not parse (for example `https://exa mple.org`) are
+  rejected when the configuration is validated (#17).
 
 ### Changed
 

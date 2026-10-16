@@ -45,6 +45,11 @@ Label values:
 - `list`: the blocklist as configured, as a `file://` path or a URL. For
   URLs, credentials, query string and fragment are removed, because the
   endpoint has no authentication and private list URLs may carry a token.
+  When something was removed, the label ends with `#` and an 8-digit
+  hexadecimal fingerprint of the full URL (for example
+  `https://lists.example/hosts#1a2b3c4d`), so lists that differ only by
+  their query string keep separate series. The fingerprint is 32 bits and
+  does not reveal the removed part.
   Series of a list removed from the configuration are dropped on reload.
 - `reason` (blocklist failures): `timeout`, `too_large`, `status` or
   `failed`.
