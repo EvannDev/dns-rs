@@ -1,0 +1,65 @@
+use std::sync::Arc;
+
+use anyhow::Context;
+use dns_rs::cache::DnsCache;
+use dns_rs::config::Config;
+use dns_rs::handler::Handler;
+use dns_rs::server::{serve_tcp, serve_udp};
+use dns_rs::upstream::DnsUpstream;
+use tokio::net::{TcpListener, UdpSocket};
+use tracing_subscriber::EnvFilter;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .init();
+
+    let config = Config::from_env()?;
+    let upstream = DnsUpstream::new(config.upstream, config.upstream_timeout);
+    let handler = Arc::new(Handler::new(upstream, DnsCache::new(config.cache_size)));
+
+    let udp = UdpSocket::bind(config.listen)
+        .await
+        .with_context(|| format!("binding UDP {}", config.listen))?;
+    let tcp = TcpListener::bind(config.listen)
+        .await
+        .with_context(|| format!("binding TCP {}", config.listen))?;
+    tracing::info!(listen = %config.listen, upstream = %config.upstream, "dns-rs started");
+
+    tokio::select! {
+        result = serve_udp(udp, Arc::clone(&handler)) => result.context("UDP server")?,
+        result = serve_tcp(tcp, handler) => result.context("TCP server")?,
+        () = shutdown_signal() => tracing::info!("shutting down"),
+    }
+    Ok(())
+}
+
+/// Resolves on Ctrl-C, or on SIGTERM as sent by container runtimes.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "cannot listen for Ctrl-C");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+}

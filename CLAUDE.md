@@ -1,0 +1,48 @@
+# dns-rs
+
+A network-wide DNS sinkhole (Pi-hole alternative) in Rust, designed to run in a
+container and, later, as multiple stateless replicas on Kubernetes.
+
+## Non-negotiable rules
+
+- **Test-driven development.** Every behaviour change starts with a failing test.
+  Cycle: write the test, see it fail for the expected reason, make it pass with the
+  simplest code, then refactor with the tests green. A PR that adds behaviour
+  without a test that covers it is incomplete.
+- **Tests describe behaviour, not implementation.** Name them after what the
+  system does (`repeated_query_is_served_from_cache`), cite the RFC when a test
+  encodes protocol rules.
+- **No network in tests** except loopback sockets owned by the test itself.
+- **Time is injected** (e.g. `now: Instant` parameters) so TTL logic is
+  deterministic; no `sleep` in unit tests.
+- The CI gate is: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
+  (pedantic is on), `cargo test`. Run all three before proposing a change.
+- No `unsafe`. No `unwrap()`/`expect()` outside tests: errors become DNS response
+  codes (SERVFAIL, FORMERR…) or are logged; the server never panics on input.
+- Code, comments and commit messages in English (Conventional Commits).
+
+## Architecture
+
+Single crate for now (`crates/dns-rs`), split into crates only when needed.
+
+| Module | Role |
+|---|---|
+| `server` | UDP/TCP listeners, UDP truncation, malformed-input handling |
+| `handler` | Request validation, cache lookup, upstream forwarding |
+| `cache` | TTL-aware response cache, negative caching (RFC 2308) |
+| `upstream` | `Upstream` trait; `DnsUpstream` = UDP with TCP fallback, anti-spoofing |
+| `wire` | DNS over TCP length-prefix framing |
+| `config` | `DNS_RS_*` environment variables |
+
+Design constraint for every feature: a replica must stay **stateless** (config
+and rules come from a shared source, cache is local, logs/metrics are exported)
+so that N replicas can run behind one service.
+
+## Roadmap
+
+0. Forwarder with cache — done
+1. Blocking: adlists, allow/deny (exact, suffix, regex), blocking modes, hot reload
+2. Observability: query log, Prometheus metrics, REST API
+3. Groups/clients, local records, conditional forwarding, DoH/DoT upstream, DNSSEC
+4. Container image, control plane / data plane split, multi-replica
+5. Kubernetes manifests, then CRDs
