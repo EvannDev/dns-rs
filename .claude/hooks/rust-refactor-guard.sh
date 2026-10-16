@@ -62,7 +62,8 @@ check_git() {
         local arg
         for arg in "$@"; do
           case $arg in
-            -O* | --open-files-in-pager* | --ext-diff | --output*) block "git $arg" ;;
+            # Prefixes, since git accepts unambiguous abbreviations (--ext).
+            -O* | --open* | --ext* | --out*) block "git $arg" ;;
           esac
         done
         return

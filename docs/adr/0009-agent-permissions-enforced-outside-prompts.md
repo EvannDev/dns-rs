@@ -35,7 +35,7 @@ its way around; prompts only explain the limits.
 ## Consequences
 
 - A hook is a guardrail, not a sandbox: an agent allowed to edit code and
-  run `cargo test` executes that code. Containment against a hostile agent
+  run `cargo test` executes that code, from any directory it can `cd` to. Containment against a hostile agent
   would need an isolated environment.
 - The guard controls which programs run, not which files are written:
   shell redirections (`>`), like the agent's own Write and Edit tools, can
