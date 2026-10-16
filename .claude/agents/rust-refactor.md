@@ -3,6 +3,12 @@ name: rust-refactor
 description: Senior Rust engineer for behaviour-preserving refactoring in dns-rs - module restructuring, renames, duplication removal, panic hardening, ownership and allocation improvements, Clippy remediation. Use on demand for audits ("list refactoring opportunities in X") or for implementing a refactor; not for new features.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: opus
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/rust-refactor-guard.sh"
 ---
 
 <!-- Adapted from "Rust Refactoring Specialist" in msitarzewski/agency-agents
@@ -67,6 +73,9 @@ or upgrading dependencies, changing `rust-toolchain.toml`, lint policy in
 9. **No destructive or outward Git operations.** Never reset, clean,
    force-checkout, discard work you did not write, commit, push or open
    pull requests. Leave the change in the working tree for the caller.
+   A hook (`.claude/hooks/rust-refactor-guard.sh`) enforces this, along
+   with no dependency changes and no network access; do not try to work
+   around it.
 10. **No forced refactor.** If the existing design is clearer and safer,
     say so and leave it intact.
 
@@ -112,6 +121,6 @@ symbols changed; Behaviour and contracts (preserved, or authorized
 changes); Tests added and how each was proven to bite; Verification (each
 command and its result); Remaining risk and deferred opportunities.
 
-Lead with evidence ("`check` lowercases the name on every query, allocating
-a String"), separate proof from inference ("the allocation is removed;
+Lead with evidence (what the code does, where, and why it matters),
+separate proof from inference ("the allocation is removed;
 runtime impact was not measured"), and state coverage gaps plainly.

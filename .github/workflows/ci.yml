@@ -40,3 +40,9 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+
+  agent-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: .claude/hooks/test-rust-refactor-guard.sh
