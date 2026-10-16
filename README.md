@@ -42,6 +42,9 @@ minimum `1m`). A list that fails keeps its last valid version. On a
 configuration reload only new lists are downloaded; removed lists stop
 blocking.
 
+See the [documentation](docs/README.md) for the configuration reference,
+blocklist formats and the log format.
+
 ## Develop
 
 The project is test-driven: see [CLAUDE.md](CLAUDE.md) for the rules.

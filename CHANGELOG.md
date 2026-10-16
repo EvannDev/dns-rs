@@ -7,6 +7,15 @@ All notable changes to dns-rs are documented here. The format is based on
 
 ### Added
 
+- Caching DNS forwarder over UDP and TCP, a query log (target
+  `dns_rs::query`), blocking with allow/deny rules, regexes and the blocking
+  modes `null`, `nxdomain`, `nodata` and `refused`, local blocklists, and
+  declarative TOML configuration with `DNS_RS_*` overrides (#2).
+- Blocklists downloaded over HTTPS (or HTTP, with a warning), with a 30 s
+  timeout, a 64 MiB size limit and four downloads at a time. A list that
+  fails is skipped (#7).
+- Wildcard lists: `{ url = "...", wildcard = true }` makes the bare domains of
+  a list also block their subdomains (#8).
 - Hot reload: the configuration file is read every 10 seconds (compared by
   content) and on `SIGHUP`. `[blocking]` changes apply without a restart;
   changes to `server.listen`, `upstream.*` and `cache.size` are logged once as
