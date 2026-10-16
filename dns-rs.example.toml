@@ -33,8 +33,8 @@ refresh = "24h"
 
 # Blocklists: hosts files, plain domain lists or Adblock `||domain^` rules,
 # from https:// URLs or file:///absolute/paths, loaded at startup and again
-# every `refresh` (4 at a time). A list that fails (error, timeout after 30 s, over 64 MiB) is
-# skipped and logged; DNS keeps working. Prefer https:// over http://:
+# every `refresh` (4 at a time). A list that fails (error, timeout after
+# 30 s, over 64 MiB) is skipped and logged; DNS keeps working. Prefer https:// over http://:
 # redirects from HTTPS down to HTTP are refused.
 #
 # A domain listed bare (`example.com`, or a hosts entry) blocks that name
