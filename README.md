@@ -33,3 +33,7 @@ The project is test-driven: see [CLAUDE.md](CLAUDE.md) for the rules.
 ```sh
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
