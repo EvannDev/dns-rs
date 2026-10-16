@@ -3,8 +3,8 @@
 A network-wide DNS sinkhole written in Rust — a modern take on Pi-hole, built to
 run in a container and scale as stateless replicas.
 
-> Status: caching DNS forwarder with blocking (local blocklists, allow/deny
-> rules, regexes). Next: HTTP blocklists and hot reload.
+> Status: caching DNS forwarder with blocking (blocklists over HTTPS or from
+> files, allow/deny rules, regexes). Next: hot reload and periodic refresh.
 
 ## Run
 
