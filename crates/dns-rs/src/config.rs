@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use regex::Regex;
+use regex::{Regex, RegexSet};
 use serde::Deserialize;
 
 use crate::blocking::{BlockingMode, Policy};
@@ -14,6 +14,10 @@ use crate::filter::{FilterBuilder, Rule};
 use crate::lists::{BareDomains, ParsedList, is_valid_domain};
 
 const DNS_PORT: u16 = 53;
+
+/// Shortest blocklist refresh interval: list providers would otherwise see
+/// every replica download every few seconds.
+const MIN_REFRESH: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -71,10 +75,13 @@ impl Default for CacheConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct BlockingConfig {
     pub mode: BlockingMode,
+    /// How often blocklists are downloaded again.
+    #[serde(with = "humantime_serde")]
+    pub refresh: Duration,
     /// Blocklists to subscribe to.
     pub lists: Vec<ListConfig>,
     /// `example.com` blocks that name, `*.example.com` it and its subdomains.
@@ -85,9 +92,23 @@ pub struct BlockingConfig {
     pub allow_regex: Vec<String>,
 }
 
+impl Default for BlockingConfig {
+    fn default() -> Self {
+        Self {
+            mode: BlockingMode::default(),
+            refresh: Duration::from_secs(24 * 60 * 60),
+            lists: Vec::new(),
+            deny: Vec::new(),
+            allow: Vec::new(),
+            deny_regex: Vec::new(),
+            allow_regex: Vec::new(),
+        }
+    }
+}
+
 /// A blocklist subscription: a URL, or `{ url = "…", wildcard = true }` when
 /// the list's bare domains also cover their subdomains.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ListConfig {
     pub source: ListSource,
     pub bare_domains: BareDomains,
@@ -152,7 +173,7 @@ impl<'de> Deserialize<'de> for ListConfig {
 }
 
 /// Where a blocklist is fetched from.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(try_from = "String")]
 pub enum ListSource {
     /// `file:///absolute/path`
@@ -244,6 +265,27 @@ impl Config {
         Ok(config)
     }
 
+    /// Settings that differ in `next` but only apply on restart: they set up
+    /// sockets, the upstream client and the cache.
+    #[must_use]
+    pub fn restart_required(&self, next: &Config) -> Vec<&'static str> {
+        [
+            ("server.listen", self.server.listen != next.server.listen),
+            (
+                "upstream.server",
+                self.upstream.server != next.upstream.server,
+            ),
+            (
+                "upstream.timeout",
+                self.upstream.timeout != next.upstream.timeout,
+            ),
+            ("cache.size", self.cache.size != next.cache.size),
+        ]
+        .into_iter()
+        .filter_map(|(setting, changed)| changed.then_some(setting))
+        .collect()
+    }
+
     /// Parses and validates a TOML document.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
         let config = parse_toml(text)?;
@@ -271,6 +313,9 @@ impl Config {
         if self.upstream.timeout.is_zero() {
             return Err(invalid("upstream.timeout", "must be greater than zero"));
         }
+        if self.blocking.refresh < MIN_REFRESH {
+            return Err(invalid("blocking.refresh", "must be at least 1 minute"));
+        }
         let blocking = &self.blocking;
         for (field, patterns) in [
             ("blocking.deny", &blocking.deny),
@@ -294,6 +339,9 @@ impl Config {
                 Regex::new(pattern)
                     .map_err(|error| invalid(field, format!("{pattern:?}: {error}")))?;
             }
+            // The policy compiles them as one set, with its own size limit.
+            RegexSet::new(patterns)
+                .map_err(|error| invalid(field, format!("too large together: {error}")))?;
         }
         Ok(())
     }
@@ -301,7 +349,10 @@ impl Config {
 
 impl BlockingConfig {
     /// The policy combining these rules with the rules of loaded `lists`.
-    pub fn policy(&self, lists: &[ParsedList]) -> Result<Policy, ConfigError> {
+    pub fn policy<'a>(
+        &self,
+        lists: impl IntoIterator<Item = &'a ParsedList>,
+    ) -> Result<Policy, ConfigError> {
         let mut builder = FilterBuilder::new();
         for list in lists {
             for rule in &list.deny {
@@ -333,8 +384,23 @@ impl BlockingConfig {
     }
 }
 
+/// Parses TOML; errors are one line (`line 4, column 1: unknown field…`)
+/// instead of toml's multi-line snippet, since they end up in logs.
 fn parse_toml(text: &str) -> Result<Config, ConfigError> {
-    toml::from_str(text).map_err(|error| ConfigError::Parse(error.to_string()))
+    toml::from_str(text).map_err(|error| {
+        let position = error.span().map_or_else(String::new, |span| {
+            let before = text.get(..span.start).unwrap_or(text);
+            let line = before.matches('\n').count() + 1;
+            let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
+            format!("line {line}, column {column}: ")
+        });
+        let message = error
+            .message()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        ConfigError::Parse(format!("{position}{message}"))
+    })
 }
 
 fn invalid(field: &str, reason: impl Into<String>) -> ConfigError {
@@ -464,6 +530,16 @@ mod tests {
         assert_eq!(blocking.allow_regex, [r"^good\."]);
     }
 
+    // Errors end up in logs read line by line (journald, Loki…).
+    #[test]
+    fn parse_error_is_one_line_with_its_position() {
+        let error = invalid("[cache]\nsize = 1\n[blocking]\ndenny = []");
+
+        assert!(!error.contains('\n'), "{error:?}");
+        assert!(error.contains("line 4"), "{error}");
+        assert!(error.contains("denny"), "{error}");
+    }
+
     #[test]
     fn upstream_without_port_defaults_to_53() {
         let config = Config::from_toml("[upstream]\nserver = \"9.9.9.9\"").unwrap();
@@ -499,6 +575,15 @@ mod tests {
 
         assert!(error.contains("deny_regex"), "{error}");
         assert!(error.contains('('), "{error}");
+    }
+
+    // The policy compiles each list of regexes as one set, which has its own
+    // size limit: validation must catch what would fail there.
+    #[test]
+    fn regexes_too_large_together_are_rejected() {
+        let error = invalid("[blocking]\ndeny_regex = ['\\w{200}a', '\\w{200}b']");
+
+        assert!(error.contains("blocking.deny_regex"), "{error}");
     }
 
     #[test]
@@ -617,6 +702,56 @@ mod tests {
         assert!(source("http://example.org/hosts").is_insecure());
         assert!(!source("https://example.org/hosts").is_insecure());
         assert!(!source("file:///etc/dns-rs/mine.txt").is_insecure());
+    }
+
+    #[test]
+    fn lists_are_refreshed_daily_by_default() {
+        let config = Config::from_toml("").unwrap();
+
+        assert_eq!(config.blocking.refresh, Duration::from_secs(24 * 60 * 60));
+    }
+
+    #[test]
+    fn refresh_interval_is_configurable() {
+        let config = Config::from_toml("[blocking]\nrefresh = \"6h\"").unwrap();
+
+        assert_eq!(config.blocking.refresh, Duration::from_secs(6 * 60 * 60));
+    }
+
+    // List providers would see every replica download every few seconds.
+    #[test]
+    fn refresh_more_often_than_every_minute_is_rejected() {
+        let error = invalid("[blocking]\nrefresh = \"30s\"");
+
+        assert!(error.contains("blocking.refresh"), "{error}");
+    }
+
+    #[test]
+    fn blocking_changes_apply_without_restart() {
+        let current = Config::default();
+        let next =
+            Config::from_toml("[blocking]\ndeny = ['ads.example.com']\nrefresh = '1h'").unwrap();
+
+        assert_eq!(current.restart_required(&next), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn server_upstream_and_cache_changes_need_a_restart() {
+        let current = Config::default();
+        let next = Config::from_toml(
+            "[server]\nlisten = '127.0.0.1:5300'\n[upstream]\nserver = '9.9.9.9'\ntimeout = '1s'\n[cache]\nsize = 5",
+        )
+        .unwrap();
+
+        assert_eq!(
+            current.restart_required(&next),
+            [
+                "server.listen",
+                "upstream.server",
+                "upstream.timeout",
+                "cache.size"
+            ]
+        );
     }
 
     #[test]

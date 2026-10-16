@@ -15,3 +15,4 @@ an old one.
 | [0007](0007-bounded-fail-soft-blocklist-downloads.md) | Bounded, fail-soft blocklist downloads | Accepted |
 | [0008](0008-test-driven-development-and-agent-review.md) | Test-driven development, enforced by CI and agents | Accepted |
 | [0009](0009-agent-permissions-enforced-outside-prompts.md) | Agent permissions are enforced outside prompts | Accepted |
+| [0010](0010-hot-reload-by-polling-and-sighup.md) | Hot reload by polling and SIGHUP, blocking settings only | Accepted |

@@ -1,5 +1,6 @@
 //! Fetching the blocklists named in the configuration.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::config::{ListConfig, ListSource};
-use crate::lists::{ParsedList, parse_list_with};
+use crate::lists::{BareDomains, ParsedList, parse_list_with};
 
 /// Bounds on list downloads, so no list can stall startup or exhaust memory.
 #[derive(Debug, Clone, Copy)]
@@ -76,50 +77,63 @@ impl ListLoader {
     /// A list that cannot be loaded is logged and skipped: DNS must keep
     /// working without it. Lists keep the order of `sources`.
     pub async fn load(&self, lists: &[ListConfig]) -> Vec<ParsedList> {
+        self.load_each(lists)
+            .await
+            .into_iter()
+            .filter_map(|(_, result)| result.ok())
+            .collect()
+    }
+
+    /// Loads every list like [`ListLoader::load`], and returns each one with
+    /// its outcome, in configuration order.
+    pub async fn load_each(&self, lists: &[ListConfig]) -> Vec<(ListConfig, ListResult)> {
         let permits = Arc::new(Semaphore::new(self.limits.concurrency.max(1)));
         let mut tasks = JoinSet::new();
         for (index, config) in lists.iter().cloned().enumerate() {
-            let ListConfig {
-                source,
-                bare_domains,
-            } = config;
-            if source.is_insecure() {
-                tracing::warn!(list = %source, "blocklist fetched over plain HTTP, prefer HTTPS");
+            if config.source.is_insecure() {
+                tracing::warn!(list = %config.source, "blocklist fetched over plain HTTP, prefer HTTPS");
             }
             let loader = self.clone();
             let permits = Arc::clone(&permits);
             tasks.spawn(async move {
                 // The semaphore is never closed, so acquiring cannot fail.
                 let _permit = permits.acquire_owned().await;
-                let result = loader
-                    .fetch(&source)
-                    .await
-                    .map(|text| parse_list_with(&text, bare_domains));
-                (index, source, result)
+                let result = match loader.fetch(&config.source).await {
+                    Ok(text) => parse(text, config.bare_domains).await,
+                    Err(error) => Err(error),
+                };
+                (index, config, result)
             });
         }
 
-        let mut loaded = Vec::with_capacity(lists.len());
+        let mut results = Vec::with_capacity(lists.len());
         while let Some(joined) = tasks.join_next().await {
             match joined {
-                Ok((index, source, Ok(list))) => {
-                    tracing::info!(
-                        list = %source,
-                        deny = list.deny.len(),
-                        allow = list.allow.len(),
-                        skipped = list.skipped,
-                        "blocklist loaded"
-                    );
-                    loaded.push((index, list));
-                }
-                Ok((_, source, Err(error))) => {
-                    tracing::warn!(list = %source, %error, "cannot load blocklist, skipped");
+                Ok((index, config, result)) => {
+                    match &result {
+                        Ok(list) => tracing::info!(
+                            list = %config.source,
+                            deny = list.deny.len(),
+                            allow = list.allow.len(),
+                            skipped = list.skipped,
+                            "blocklist loaded"
+                        ),
+                        Err(error) => tracing::warn!(
+                            list = %config.source,
+                            %error,
+                            "cannot load blocklist, skipped"
+                        ),
+                    }
+                    results.push((index, config, result));
                 }
                 Err(error) => tracing::error!(%error, "blocklist task failed"),
             }
         }
-        loaded.sort_by_key(|(index, _)| *index);
-        loaded.into_iter().map(|(_, list)| list).collect()
+        results.sort_by_key(|(index, ..)| *index);
+        results
+            .into_iter()
+            .map(|(_, config, result)| (config, result))
+            .collect()
     }
 
     /// The text of one list.
@@ -177,6 +191,69 @@ impl ListLoader {
     fn limit_u64(&self) -> u64 {
         u64::try_from(self.limits.max_bytes).unwrap_or(u64::MAX)
     }
+}
+
+/// The outcome of loading one list.
+pub type ListResult = Result<ParsedList, FetchError>;
+
+/// The last valid version of each configured list, so that a list failing
+/// on refresh keeps blocking with its previous content (ADR 0007).
+#[derive(Debug, Clone, Default)]
+pub struct ListStore {
+    lists: HashMap<ListConfig, Arc<ParsedList>>,
+}
+
+impl ListStore {
+    /// Records fresh results: a list that loaded replaces its previous
+    /// version; a list that failed keeps it, if it had one.
+    pub fn update(&mut self, results: Vec<(ListConfig, ListResult)>) {
+        for (config, result) in results {
+            match result {
+                Ok(list) => {
+                    self.lists.insert(config, Arc::new(list));
+                }
+                Err(_) if self.lists.contains_key(&config) => {
+                    tracing::warn!(list = %config.source, "keeping the previous version of the blocklist");
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    /// Forgets lists that are no longer configured.
+    pub fn retain(&mut self, configured: &[ListConfig]) {
+        self.lists.retain(|config, _| configured.contains(config));
+    }
+
+    /// Configured lists that have no version yet, in configuration order.
+    #[must_use]
+    pub fn missing(&self, configured: &[ListConfig]) -> Vec<ListConfig> {
+        configured
+            .iter()
+            .filter(|config| !self.lists.contains_key(config))
+            .cloned()
+            .collect()
+    }
+
+    /// Every stored list, in no particular order.
+    pub fn lists(&self) -> impl Iterator<Item = &ParsedList> {
+        self.lists.values().map(AsRef::as_ref)
+    }
+
+    /// Shared handles to every stored list, to build a policy elsewhere
+    /// (on a blocking thread) without copying the rules.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<Arc<ParsedList>> {
+        self.lists.values().cloned().collect()
+    }
+}
+
+/// Parses off the async runtime: a list of several MiB takes long enough to
+/// delay queries if parsed on a runtime worker during a refresh.
+async fn parse(text: String, bare_domains: BareDomains) -> ListResult {
+    tokio::task::spawn_blocking(move || parse_list_with(&text, bare_domains))
+        .await
+        .map_err(|error| FetchError::Failed(format!("parsing task failed: {error}")))
 }
 
 /// Whether to follow a redirect to `next` after visiting `previous`:
@@ -670,6 +747,126 @@ mod tests {
             gauge.peak.load(Ordering::SeqCst) <= 2,
             "peak {}",
             gauge.peak.load(Ordering::SeqCst)
+        );
+    }
+
+    mod store {
+        use super::*;
+
+        fn config(name: &str) -> ListConfig {
+            ListSource::File(format!("/lists/{name}.txt").into()).into()
+        }
+
+        fn list(domain: &str) -> ParsedList {
+            ParsedList {
+                deny: vec![Rule::Exact(domain.to_owned())],
+                ..ParsedList::default()
+            }
+        }
+
+        fn denied(store: &ListStore) -> Vec<Rule> {
+            let mut rules: Vec<Rule> = store.lists().flat_map(|l| l.deny.clone()).collect();
+            rules.sort_by_key(|rule| format!("{rule:?}"));
+            rules
+        }
+
+        #[test]
+        fn loaded_list_is_stored() {
+            let mut store = ListStore::default();
+
+            store.update(vec![(config("a"), Ok(list("a.example.com")))]);
+
+            assert_eq!(denied(&store), [Rule::Exact("a.example.com".to_owned())]);
+        }
+
+        #[test]
+        fn failed_refresh_keeps_the_previous_version() {
+            let mut store = ListStore::default();
+            store.update(vec![(config("a"), Ok(list("a.example.com")))]);
+
+            store.update(vec![(config("a"), Err(FetchError::Timeout))]);
+
+            assert_eq!(denied(&store), [Rule::Exact("a.example.com".to_owned())]);
+        }
+
+        #[test]
+        fn failed_list_without_previous_version_is_absent() {
+            let mut store = ListStore::default();
+
+            store.update(vec![(config("a"), Err(FetchError::Status(404)))]);
+
+            assert_eq!(denied(&store), []);
+        }
+
+        #[test]
+        fn successful_refresh_replaces_the_previous_version() {
+            let mut store = ListStore::default();
+            store.update(vec![(config("a"), Ok(list("old.example.com")))]);
+
+            store.update(vec![(config("a"), Ok(list("new.example.com")))]);
+
+            assert_eq!(denied(&store), [Rule::Exact("new.example.com".to_owned())]);
+        }
+
+        #[test]
+        fn lists_no_longer_configured_are_forgotten() {
+            let mut store = ListStore::default();
+            store.update(vec![
+                (config("a"), Ok(list("a.example.com"))),
+                (config("b"), Ok(list("b.example.com"))),
+            ]);
+
+            store.retain(&[config("b")]);
+
+            assert_eq!(denied(&store), [Rule::Exact("b.example.com".to_owned())]);
+        }
+
+        // The same URL with another wildcard setting is another list.
+        #[test]
+        fn list_identity_includes_its_wildcard_setting() {
+            let mut store = ListStore::default();
+            let exact = config("a");
+            let wildcard = ListConfig {
+                bare_domains: BareDomains::WithSubdomains,
+                ..exact.clone()
+            };
+            store.update(vec![(exact, Ok(list("a.example.com")))]);
+
+            assert_eq!(store.missing(std::slice::from_ref(&wildcard)), [wildcard]);
+        }
+
+        #[test]
+        fn missing_lists_keep_configuration_order() {
+            let mut store = ListStore::default();
+            store.update(vec![(config("b"), Ok(list("b.example.com")))]);
+
+            let missing = store.missing(&[config("c"), config("b"), config("a")]);
+
+            assert_eq!(missing, [config("c"), config("a")]);
+        }
+    }
+
+    #[tokio::test]
+    async fn load_each_reports_every_list_with_its_outcome() {
+        let file = list_file("ads.example.com");
+        let lists = configs(&[
+            ListSource::File(file.path().into()),
+            ListSource::File("/nonexistent/list.txt".into()),
+        ]);
+
+        let results = loader().load_each(&lists).await;
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, lists[0]);
+        assert_eq!(
+            results[0].1.as_ref().unwrap().deny,
+            [Rule::Exact("ads.example.com".to_owned())]
+        );
+        assert_eq!(results[1].0, lists[1]);
+        assert!(
+            matches!(results[1].1, Err(FetchError::Failed(_))),
+            "{:?}",
+            results[1].1
         );
     }
 }

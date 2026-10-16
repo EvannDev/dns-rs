@@ -23,7 +23,7 @@ const HOSTS_BOILERPLATE: &[&str] = &[
 const MAX_DOMAIN_LEN: usize = 253;
 const MAX_LABEL_LEN: usize = 63;
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedList {
     pub deny: Vec<Rule>,
     /// Exceptions (`@@||domain^`) shipped by the list itself.
@@ -34,7 +34,7 @@ pub struct ParsedList {
 
 /// What a domain listed without syntax (`example.com`, or a hosts entry)
 /// blocks. `*.example.com` lines always block the domain and its subdomains.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BareDomains {
     /// That name only, as in Pi-hole and hosts files.
     #[default]
