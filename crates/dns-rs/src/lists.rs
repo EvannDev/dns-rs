@@ -177,7 +177,7 @@ mod tests {
         let list = parse_list("@@||good.example.com^");
 
         assert_eq!(list.allow, vec![subtree("good.example.com")]);
-        assert!(list.deny.is_empty());
+        assert_eq!(list.deny, []);
     }
 
     // Options such as $third-party or $client change the meaning of the rule;
@@ -186,7 +186,7 @@ mod tests {
     fn adblock_rule_with_options_is_skipped() {
         let list = parse_list("||ads.example.com^$third-party");
 
-        assert!(list.deny.is_empty());
+        assert_eq!(list.deny, []);
         assert_eq!(list.skipped, 1);
     }
 
@@ -250,7 +250,7 @@ mod tests {
     fn single_label_names_are_skipped() {
         let list = parse_list("com\n||net^");
 
-        assert!(list.deny.is_empty());
+        assert_eq!(list.deny, []);
         assert_eq!(list.skipped, 2);
     }
 

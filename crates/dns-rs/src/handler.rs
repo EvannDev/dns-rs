@@ -103,7 +103,16 @@ mod tests {
     }
 
     impl Upstream for FakeUpstream {
-        async fn query(&self, query: &Message) -> Result<Message, UpstreamError> {
+        fn query(
+            &self,
+            query: &Message,
+        ) -> impl Future<Output = Result<Message, UpstreamError>> + Send {
+            std::future::ready(self.answer(query))
+        }
+    }
+
+    impl FakeUpstream {
+        fn answer(&self, query: &Message) -> Result<Message, UpstreamError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             *self.last_query.lock().unwrap() = Some(query.clone());
             if self.fail {

@@ -192,7 +192,7 @@ mod tests {
         let sent = decode(&bytes);
         assert!(sent.metadata.truncation);
         assert_eq!(sent.metadata.id, 7);
-        assert!(sent.answers.is_empty());
+        assert_eq!(sent.answers, []);
     }
 
     #[test]
