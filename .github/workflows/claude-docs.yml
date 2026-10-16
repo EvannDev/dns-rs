@@ -44,6 +44,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
           fetch-depth: 0
 
+      # The agent runs cargo test / cargo doc; the version comes from
+      # rust-toolchain.toml, as in CI.
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
 
       - uses: anthropics/claude-code-action@v1

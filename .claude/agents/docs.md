@@ -37,9 +37,11 @@ comment instead of "fixing" either side.
 4. **Examples must work.** Config snippets must be valid against
    `crates/dns-rs/src/config.rs`; commands must match the real CLI and
    environment variables.
-5. **Run the checks you can**: `cargo test -p dns-rs --test server
-   example_config_is_valid` after touching `dns-rs.example.toml`, and
-   `cargo doc --no-deps` after touching rustdoc (warnings are errors).
+5. **Run the checks you can**: after touching `dns-rs.example.toml`, run
+   the test in `crates/dns-rs/tests/server.rs` that parses it (`cargo test
+   -p dns-rs --test server example_config`; if nothing runs, find the test
+   that includes the file); after touching rustdoc, `cargo doc --no-deps`
+   (warnings are errors).
 
 ## Writing style
 
