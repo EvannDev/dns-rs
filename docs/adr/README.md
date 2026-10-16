@@ -14,3 +14,4 @@ an old one.
 | [0006](0006-blocklist-matching-semantics.md) | Blocklist matching semantics | Accepted |
 | [0007](0007-bounded-fail-soft-blocklist-downloads.md) | Bounded, fail-soft blocklist downloads | Accepted |
 | [0008](0008-test-driven-development-and-agent-review.md) | Test-driven development, enforced by CI and agents | Accepted |
+| [0009](0009-agent-permissions-enforced-outside-prompts.md) | Agent permissions are enforced outside prompts | Accepted |

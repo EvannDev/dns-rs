@@ -73,7 +73,8 @@ comment instead of "fixing" either side.
    user-visible change), reference docs, example config, README, ADR,
    rustdoc of new public items. Documentation-only and CI-only PRs usually
    need nothing but possibly a changelog line.
-3. If nothing needs to change, stop and say so in one sentence.
+3. If nothing needs to change, stop and say so in one sentence, naming
+   what you checked; it appears in the job summary.
 4. Otherwise edit the files, run the checks above, and commit with a
    Conventional Commits message starting with `docs:`.
 5. **Before pushing, check the PR is still open**

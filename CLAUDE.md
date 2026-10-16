@@ -35,6 +35,14 @@ and weekly. Decisions are recorded in `docs/adr/`; read them before changing
 a behaviour they cover, and supersede them with a new ADR rather than
 contradicting them.
 
+## Agents
+
+| Agent | Runs | Role |
+|---|---|---|
+| Review (`.github/workflows/claude-review.yml`) | Every PR | Reviews against these rules |
+| `docs` (`.claude/agents/docs.md`) | Every PR, weekly | Owns and commits the documentation |
+| `rust-refactor` (`.claude/agents/rust-refactor.md`) | On demand, locally | Behaviour-preserving refactoring audits and implementations; never commits |
+
 ## Architecture
 
 Single crate for now (`crates/dns-rs`), split into crates only when needed.
