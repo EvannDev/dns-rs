@@ -1,0 +1,75 @@
+name: Claude review
+
+# Reviews every PR against the rules in CLAUDE.md, TDD first.
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Dependabot PRs have no access to secrets.
+    if: github.event.pull_request.draft == false && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          # Set one of the two secrets: a subscription token from
+          # `claude setup-token`, or an Anthropic API key.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          track_progress: true
+          use_sticky_comment: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            BASE: ${{ github.event.pull_request.base.sha }}
+
+            You review pull requests for dns-rs, a DNS sinkhole in Rust. Read
+            CLAUDE.md first: its rules are the review checklist. Review the
+            diff against BASE, commit by commit when the history matters.
+
+            Check, in this order:
+
+            1. Test-driven development
+               - Every behaviour change comes with a test that covers it. Name
+                 any behaviour (branch, error path, config option) left
+                 untested, with the test you would expect.
+               - Tests describe behaviour, are deterministic (injected time,
+                 no sleep in unit tests, no network but loopback), and would
+                 fail if the behaviour broke. Flag tests that cannot fail.
+               - Tests capturing tracing output live alone in their own binary.
+            2. Correctness
+               - DNS protocol: response codes, IDs, TTLs, truncation, EDNS,
+                 case-insensitive names. Cite the RFC when you flag a deviation.
+               - The server must never panic on input: no unwrap/expect
+                 outside tests; errors become DNS response codes or logs.
+               - Concurrency: no lock held across .await, no blocking I/O in
+                 async code, policy swaps stay atomic.
+            3. Statelessness: a replica must keep no state that would break
+               running several of them behind one service.
+            4. Security: untrusted input from the network and from blocklists
+               (sizes, parsing, resource exhaustion).
+            5. Docs: README, dns-rs.example.toml and CLAUDE.md stay accurate.
+
+            Do not comment on formatting or lints: CI enforces them.
+
+            Post inline comments for specific issues, each starting with a
+            severity: [blocking], [important] or [nit]. Then post one summary
+            comment with a verdict: "Ready to merge" or "Changes requested",
+            the blocking issues, and a short list of what is well done.
+            Write comments in French; keep code identifiers as they are.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*)"
