@@ -43,6 +43,11 @@ jobs:
           # On PRs, the branch itself (not the merge ref) so commits can be pushed.
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
           fetch-depth: 0
+          # Do not keep GITHUB_TOKEN in git config: checkout stores it as an
+          # Authorization header that overrides the Claude app token, so the
+          # agent's pushes would come from github-actions[bot], which GitHub
+          # does not let trigger workflows (no CI on the agent's commits).
+          persist-credentials: false
 
       # The agent runs cargo test / cargo doc; the version comes from
       # rust-toolchain.toml, as in CI.
