@@ -280,3 +280,18 @@ async fn probes_and_metrics_need_no_token() {
         assert_eq!(get(addr, path).await.status(), 200, "{path}");
     }
 }
+
+// The whole /api prefix is protected, so an endpoint added later cannot be
+// left open by mistake, and unknown paths reveal nothing without a token.
+#[tokio::test]
+async fn whole_api_prefix_requires_the_token() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    let without = api_get(addr, "/api/v1/unknown", None).await.status();
+    let with = api_get(addr, "/api/v1/unknown", Some(&format!("Bearer {TOKEN}")))
+        .await
+        .status();
+
+    assert_eq!(without, 401);
+    assert_eq!(with, 404);
+}

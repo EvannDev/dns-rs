@@ -929,16 +929,53 @@ mod tests {
         }
 
         #[test]
-        fn short_token_is_rejected() {
+        fn short_token_is_rejected_without_being_echoed() {
             let error = Config::default()
-                .api_token(env(&[("DNS_RS_API_TOKEN", "short")]))
+                .api_token(env(&[("DNS_RS_API_TOKEN", "Xq7Zp2")]))
                 .unwrap_err()
                 .to_string();
 
             assert!(error.contains("16"), "{error}");
+            assert!(error.contains("DNS_RS_API_TOKEN"), "{error}");
             assert!(
-                !error.contains("short\""),
+                !error.contains("Xq7Zp2"),
                 "the token must not be echoed: {error}"
+            );
+        }
+
+        #[test]
+        fn short_token_from_a_file_names_the_file() {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            writeln!(file, "Xq7Zp2").unwrap();
+            let config = Config::from_toml(&format!(
+                "[http]\napi_token_file = '{}'",
+                file.path().display()
+            ))
+            .unwrap();
+
+            let error = config.api_token(env(&[])).unwrap_err().to_string();
+
+            assert!(error.contains("http.api_token_file"), "{error}");
+            assert!(!error.contains("Xq7Zp2"), "{error}");
+        }
+
+        // A token source that is set but empty is a mistake, not a request to
+        // disable the API: startup must fail rather than silently go on.
+        #[test]
+        fn empty_token_sources_are_errors() {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            writeln!(file).unwrap();
+            let config = Config::from_toml(&format!(
+                "[http]\napi_token_file = '{}'",
+                file.path().display()
+            ))
+            .unwrap();
+
+            assert!(config.api_token(env(&[])).is_err());
+            assert!(
+                Config::default()
+                    .api_token(env(&[("DNS_RS_API_TOKEN", "")]))
+                    .is_err()
             );
         }
 

@@ -33,3 +33,13 @@ the port; make the API opt-in; protect it with a token.
 - Rotating the token needs a restart, like every `[http]` setting.
 - `/metrics` remains readable without a token: it reveals traffic volumes
   and list labels, not the rules themselves.
+- The whole `/api/` prefix is behind the token, unknown paths included, so
+  an endpoint added later cannot be left open by mistake.
+- Known limits, accepted for now:
+  - the comparison takes the same time for tokens of the same length, but
+    reveals whether a guess has the right length;
+  - the endpoint speaks plain HTTP: on an untrusted network the token
+    travels in clear, so put TLS in front (ingress, service mesh) or keep
+    the port private (NetworkPolicy, loopback);
+  - failed attempts are not rate limited, which a long random token makes
+    harmless (for example `openssl rand -hex 32`).

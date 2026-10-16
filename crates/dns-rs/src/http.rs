@@ -29,9 +29,9 @@ pub struct HttpState {
 }
 
 impl HttpState {
-    #[must_use]
     /// `api_token`: the token `/api/*` requests must present; without one,
     /// the API is disabled.
+    #[must_use]
     pub fn new(
         metrics: Arc<Metrics>,
         policy: Arc<dyn PolicyView>,
@@ -55,14 +55,18 @@ impl HttpState {
 pub async fn serve_http(listener: TcpListener, state: HttpState) -> io::Result<()> {
     // Probes and metrics stay open for the kubelet and Prometheus; the API,
     // which reveals the blocking policy, needs the token.
+    // `layer` (not `route_layer`) with a fallback covers the whole prefix:
+    // an endpoint added later cannot be left open, and unknown paths reveal
+    // nothing without the token.
     let api = Router::new()
-        .route("/api/v1/check/{domain}", get(check))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
+        .route("/v1/check/{domain}", get(check))
+        .fallback(api_not_found)
+        .layer(middleware::from_fn_with_state(state.clone(), require_token));
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readiness))
         .route("/metrics", get(metrics))
-        .merge(api)
+        .nest("/api", api)
         .with_state(state);
     axum::serve(listener, router).await
 }
@@ -111,6 +115,11 @@ fn is_query_name(name: &str) -> bool {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         })
+}
+
+async fn api_not_found() -> Response {
+    let error = "no such API endpoint".to_owned();
+    (StatusCode::NOT_FOUND, Json(ErrorResponse { error })).into_response()
 }
 
 /// Lets a request through only if it carries `Authorization: Bearer <token>`
