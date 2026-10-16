@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use dns_rs::blocking::Policy;
 use dns_rs::cache::DnsCache;
 use dns_rs::handler::Handler;
 use dns_rs::server::{serve_tcp, serve_udp};
@@ -54,9 +55,14 @@ pub struct TestServer {
 }
 
 pub async fn start_server() -> TestServer {
+    start_server_with_policy(Policy::allow_all()).await
+}
+
+pub async fn start_server_with_policy(policy: Policy) -> TestServer {
     let (upstream_addr, upstream_calls) = fake_upstream().await;
     let upstream = DnsUpstream::new(upstream_addr, Duration::from_secs(1));
     let handler = Arc::new(Handler::new(upstream, DnsCache::new(100)));
+    handler.set_policy(policy);
 
     let udp_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

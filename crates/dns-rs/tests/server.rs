@@ -5,7 +5,8 @@ mod common;
 use std::net::Ipv4Addr;
 use std::sync::atomic::Ordering;
 
-use common::{ANSWER, query, start_server, udp_exchange};
+use common::{ANSWER, query, start_server, start_server_with_policy, udp_exchange};
+use dns_rs::config::Config;
 use dns_rs::wire::{read_tcp_message, write_tcp_message};
 use hickory_proto::op::{Message, MessageType, ResponseCode};
 use hickory_proto::rr::RData;
@@ -96,4 +97,35 @@ async fn ignores_datagrams_that_are_responses() {
     let response = udp_exchange(server.udp, &msg.to_vec().unwrap()).await;
 
     assert!(response.is_none());
+}
+
+#[tokio::test]
+async fn blocks_domains_denied_by_the_config() {
+    let config = Config::from_toml(
+        r#"
+        [blocking]
+        deny = ["*.ads.example"]
+        "#,
+    )
+    .unwrap();
+    let server = start_server_with_policy(config.blocking.policy(&[]).unwrap()).await;
+
+    let blocked = udp_exchange(server.udp, &query(7, "x.ads.example.").to_vec().unwrap())
+        .await
+        .expect("a response");
+    let allowed = udp_exchange(server.udp, &query(8, "example.com.").to_vec().unwrap())
+        .await
+        .expect("a response");
+
+    assert_eq!(first_a(&blocked), Ipv4Addr::UNSPECIFIED);
+    assert_eq!(first_a(&allowed), ANSWER);
+    assert_eq!(server.upstream_calls.load(Ordering::SeqCst), 1);
+}
+
+// The example file documents the configuration: it must stay valid.
+#[test]
+fn example_config_is_valid() {
+    let text = include_str!("../../../dns-rs.example.toml");
+
+    Config::from_toml(text).unwrap();
 }

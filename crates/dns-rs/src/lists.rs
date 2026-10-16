@@ -102,7 +102,7 @@ fn parse_hosts_or_domain(line: &str, list: &mut ParsedList) {
 }
 
 /// At least two labels of letters, digits, `-` or `_`, within DNS limits.
-fn is_valid_domain(domain: &str) -> bool {
+pub(crate) fn is_valid_domain(domain: &str) -> bool {
     let domain = domain.strip_suffix('.').unwrap_or(domain);
     domain.len() <= MAX_DOMAIN_LEN
         && domain.contains('.')

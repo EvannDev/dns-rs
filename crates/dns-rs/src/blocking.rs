@@ -11,7 +11,8 @@ use crate::filter::Filter;
 /// TTL of synthesized answers: short, so unblocking takes effect quickly.
 pub const BLOCKED_TTL: u32 = 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BlockingMode {
     /// `0.0.0.0` / `::` for A / AAAA, empty NOERROR otherwise (Pi-hole default).
     #[default]

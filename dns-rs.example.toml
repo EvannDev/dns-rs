@@ -1,0 +1,40 @@
+# dns-rs configuration. Point DNS_RS_CONFIG at this file.
+# Every section and key is optional; the values below are the defaults
+# unless stated otherwise.
+
+[server]
+# UDP and TCP listen address. Override: DNS_RS_LISTEN
+listen = "0.0.0.0:53"
+
+[upstream]
+# Resolver queries are forwarded to; the port defaults to 53.
+# Override: DNS_RS_UPSTREAM
+server = "1.1.1.1:53"
+# Override (milliseconds): DNS_RS_UPSTREAM_TIMEOUT_MS
+timeout = "2s"
+
+[cache]
+# Maximum number of cached responses. Override: DNS_RS_CACHE_SIZE
+size = 10000
+
+[blocking]
+# null: 0.0.0.0 / :: for A / AAAA, empty answer otherwise (default)
+# nxdomain | nodata | refused
+mode = "null"
+
+# Blocklists: hosts files, plain domain lists or Adblock `||domain^` rules.
+# file:///absolute/path is supported; http(s):// lists are coming soon.
+# Example (default: none):
+# lists = ["file:///etc/dns-rs/lists/stevenblack-hosts.txt"]
+lists = []
+
+# `example.com` blocks that name only, `*.example.com` it and its subdomains.
+# Example (default: none): deny = ["ads.example.com", "*.tracker.example"]
+deny = []
+# Same syntax; allow always wins over deny and blocklists.
+allow = []
+
+# Regexes, matched against the lowercase name without trailing dot.
+# Example (default: none): deny_regex = ['^ad[0-9]+\.']
+deny_regex = []
+allow_regex = []
