@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::blocking::{BlockingMode, Policy};
 use crate::filter::{FilterBuilder, Rule};
-use crate::lists::{ParsedList, is_valid_domain};
+use crate::lists::{BareDomains, ParsedList, is_valid_domain};
 
 const DNS_PORT: u16 = 53;
 
@@ -76,13 +76,79 @@ impl Default for CacheConfig {
 pub struct BlockingConfig {
     pub mode: BlockingMode,
     /// Blocklists to subscribe to.
-    pub lists: Vec<ListSource>,
+    pub lists: Vec<ListConfig>,
     /// `example.com` blocks that name, `*.example.com` it and its subdomains.
     pub deny: Vec<String>,
     /// Same syntax as `deny`; always wins over it.
     pub allow: Vec<String>,
     pub deny_regex: Vec<String>,
     pub allow_regex: Vec<String>,
+}
+
+/// A blocklist subscription: a URL, or `{ url = "…", wildcard = true }` when
+/// the list's bare domains also cover their subdomains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListConfig {
+    pub source: ListSource,
+    pub bare_domains: BareDomains,
+}
+
+impl From<ListSource> for ListConfig {
+    fn from(source: ListSource) -> Self {
+        Self {
+            source,
+            bare_domains: BareDomains::Exact,
+        }
+    }
+}
+
+/// The table form of a list entry.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListTable {
+    url: ListSource,
+    #[serde(default)]
+    wildcard: bool,
+}
+
+impl<'de> Deserialize<'de> for ListConfig {
+    // Hand-written rather than `#[serde(untagged)]`, whose errors would hide
+    // the cause ("did not match any variant") behind a generic message.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ListConfig;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a list URL, or a table { url = \"…\", wildcard = true }")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, url: &str) -> Result<ListConfig, E> {
+                ListSource::try_from(url.to_owned())
+                    .map(ListConfig::from)
+                    .map_err(E::custom)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<ListConfig, A::Error> {
+                let table =
+                    ListTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(ListConfig {
+                    source: table.url,
+                    bare_domains: if table.wildcard {
+                        BareDomains::WithSubdomains
+                    } else {
+                        BareDomains::Exact
+                    },
+                })
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// Where a blocklist is fetched from.
@@ -388,8 +454,8 @@ mod tests {
         assert_eq!(
             blocking.lists,
             vec![
-                ListSource::Http("https://example.org/hosts".to_owned()),
-                ListSource::File("/etc/dns-rs/mine.txt".into()),
+                ListSource::Http("https://example.org/hosts".to_owned()).into(),
+                ListSource::File("/etc/dns-rs/mine.txt".into()).into(),
             ]
         );
         assert_eq!(blocking.deny, ["ads.example.com", "*.tracker.net"]);
@@ -455,6 +521,84 @@ mod tests {
         let error = invalid("[blocking]\nlists = ['file://lists/mine.txt']");
 
         assert!(error.contains("absolute"), "{error}");
+    }
+
+    fn lists(toml: &str) -> Vec<ListConfig> {
+        Config::from_toml(&format!("[blocking]\nlists = {toml}"))
+            .unwrap()
+            .blocking
+            .lists
+    }
+
+    #[test]
+    fn list_given_as_a_string_has_exact_bare_domains() {
+        assert_eq!(
+            lists("['https://example.org/hosts']"),
+            [ListConfig {
+                source: ListSource::Http("https://example.org/hosts".to_owned()),
+                bare_domains: BareDomains::Exact,
+            }]
+        );
+    }
+
+    #[test]
+    fn wildcard_list_covers_subdomains_of_bare_domains() {
+        assert_eq!(
+            lists("[{ url = 'https://big.oisd.nl/domainswild2', wildcard = true }]"),
+            [ListConfig {
+                source: ListSource::Http("https://big.oisd.nl/domainswild2".to_owned()),
+                bare_domains: BareDomains::WithSubdomains,
+            }]
+        );
+    }
+
+    #[test]
+    fn list_table_without_wildcard_is_exact() {
+        assert_eq!(
+            lists("[{ url = 'file:///etc/dns-rs/mine.txt' }]"),
+            [ListSource::File("/etc/dns-rs/mine.txt".into()).into()]
+        );
+    }
+
+    #[test]
+    fn string_and_table_entries_can_be_mixed() {
+        assert_eq!(
+            lists(
+                "['https://a.example/hosts', { url = 'https://b.example/list', wildcard = true }]"
+            ),
+            [
+                ListConfig {
+                    source: ListSource::Http("https://a.example/hosts".to_owned()),
+                    bare_domains: BareDomains::Exact,
+                },
+                ListConfig {
+                    source: ListSource::Http("https://b.example/list".to_owned()),
+                    bare_domains: BareDomains::WithSubdomains,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unknown_key_in_list_table_is_rejected() {
+        let error =
+            invalid("[blocking]\nlists = [{ url = 'https://a.example/', wildcards = true }]");
+
+        assert!(error.contains("wildcards"), "{error}");
+    }
+
+    #[test]
+    fn list_table_without_url_is_rejected() {
+        let error = invalid("[blocking]\nlists = [{ wildcard = true }]");
+
+        assert!(error.contains("url"), "{error}");
+    }
+
+    #[test]
+    fn invalid_url_in_list_table_is_reported() {
+        let error = invalid("[blocking]\nlists = [{ url = 'ftp://a.example/', wildcard = true }]");
+
+        assert!(error.contains("ftp://a.example/"), "{error}");
     }
 
     #[test]
