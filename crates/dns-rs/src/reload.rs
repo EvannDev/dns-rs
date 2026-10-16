@@ -4,6 +4,10 @@
 //! upstream client or the cache are reported as needing a restart.
 
 use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::blocking::Policy;
 use crate::config::{BlockingConfig, Config, ConfigError};
@@ -23,6 +27,10 @@ pub enum ConfigChange {
     /// stays in force.
     Rejected(String),
 }
+
+/// How often the configuration file is read again. Kubernetes updates a
+/// mounted `ConfigMap` within about a minute, so a few seconds is plenty.
+pub const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 type Lookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -115,6 +123,38 @@ impl<U: Upstream> Reloader<U> {
             Ok(policy) => self.handler.set_policy(policy),
             Err(error) => {
                 tracing::error!(%error, "cannot rebuild the blocking policy, keeping the previous one");
+            }
+        }
+    }
+
+    /// Runs until `reload_now` is closed: reads the configuration every
+    /// `poll` and on each `reload_now` message (SIGHUP in production), and
+    /// downloads the lists again every `blocking.refresh`.
+    pub async fn run(mut self, poll: Duration, mut reload_now: mpsc::Receiver<()>) {
+        let mut poll_timer = tokio::time::interval(poll);
+        poll_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        // The first tick is immediate: the configuration was just loaded.
+        poll_timer.tick().await;
+        let mut last_refresh = Instant::now();
+        loop {
+            // Recomputed each turn, so a new `blocking.refresh` applies at once.
+            let next_refresh = last_refresh + self.active.blocking.refresh;
+            tokio::select! {
+                _ = poll_timer.tick() => {
+                    self.reload_config().await;
+                }
+                message = reload_now.recv() => match message {
+                    Some(()) => {
+                        tracing::info!("reload requested");
+                        self.reload_config().await;
+                    }
+                    None => return,
+                },
+                () = tokio::time::sleep_until(next_refresh) => {
+                    tracing::info!("refreshing blocklists");
+                    self.refresh_lists().await;
+                    last_refresh = Instant::now();
+                }
             }
         }
     }
@@ -416,5 +456,88 @@ mod tests {
         assert!(blocked(&handler, "other.example.com.").await);
         assert!(blocked(&handler, "listed.example.com.").await);
         assert!(!blocked(&handler, "changed.example.com.").await);
+    }
+
+    mod run {
+        use super::*;
+
+        /// Starts the loop in the background, polling every 10 s.
+        async fn running(setup: &Setup) -> (Arc<Handler<NoUpstream>>, mpsc::Sender<()>) {
+            let (reloader, handler) = setup.reloader().await;
+            let (reload_now, receiver) = mpsc::channel(1);
+            tokio::spawn(reloader.run(Duration::from_secs(10), receiver));
+            (handler, reload_now)
+        }
+
+        /// Waits (in paused time) until `name` is blocked, at most `limit`.
+        async fn blocked_within(
+            handler: &Handler<NoUpstream>,
+            name: &str,
+            limit: Duration,
+        ) -> bool {
+            let deadline = tokio::time::Instant::now() + limit;
+            while tokio::time::Instant::now() < deadline {
+                if blocked(handler, name).await {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            false
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn config_changes_apply_at_the_next_poll() {
+            let setup = Setup::new();
+            setup.config("");
+            let (handler, _reload_now) = running(&setup).await;
+
+            setup.config("[blocking]\ndeny = ['new.example.com']");
+
+            assert!(!blocked(&handler, "new.example.com.").await);
+            assert!(blocked_within(&handler, "new.example.com.", Duration::from_secs(11)).await);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn reload_signal_applies_changes_before_the_next_poll() {
+            let setup = Setup::new();
+            setup.config("");
+            let (handler, reload_now) = running(&setup).await;
+
+            setup.config("[blocking]\ndeny = ['new.example.com']");
+            reload_now.send(()).await.unwrap();
+
+            assert!(blocked_within(&handler, "new.example.com.", Duration::from_secs(1)).await);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn lists_are_refreshed_every_refresh_interval() {
+            let setup = Setup::new();
+            setup.write("list.txt", "old.example.com\n");
+            setup.config(&format!(
+                "[blocking]\nrefresh = '1m'\nlists = ['{}']",
+                setup.list_url("list.txt")
+            ));
+            let (handler, _reload_now) = running(&setup).await;
+
+            setup.write("list.txt", "new.example.com\n");
+
+            assert!(!blocked_within(&handler, "new.example.com.", Duration::from_secs(50)).await);
+            assert!(blocked_within(&handler, "new.example.com.", Duration::from_secs(15)).await);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn refresh_interval_change_takes_effect() {
+            let setup = Setup::new();
+            setup.write("list.txt", "old.example.com\n");
+            let list = setup.list_url("list.txt");
+            setup.config(&format!("[blocking]\nrefresh = '24h'\nlists = ['{list}']"));
+            let (handler, reload_now) = running(&setup).await;
+
+            setup.config(&format!("[blocking]\nrefresh = '1m'\nlists = ['{list}']"));
+            reload_now.send(()).await.unwrap();
+            setup.write("list.txt", "new.example.com\n");
+
+            assert!(blocked_within(&handler, "new.example.com.", Duration::from_secs(70)).await);
+        }
     }
 }

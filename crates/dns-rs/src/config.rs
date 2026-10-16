@@ -381,8 +381,23 @@ impl BlockingConfig {
     }
 }
 
+/// Parses TOML; errors are one line (`line 4, column 1: unknown field…`)
+/// instead of toml's multi-line snippet, since they end up in logs.
 fn parse_toml(text: &str) -> Result<Config, ConfigError> {
-    toml::from_str(text).map_err(|error| ConfigError::Parse(error.to_string()))
+    toml::from_str(text).map_err(|error| {
+        let position = error.span().map_or_else(String::new, |span| {
+            let before = text.get(..span.start).unwrap_or(text);
+            let line = before.matches('\n').count() + 1;
+            let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
+            format!("line {line}, column {column}: ")
+        });
+        let message = error
+            .message()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        ConfigError::Parse(format!("{position}{message}"))
+    })
 }
 
 fn invalid(field: &str, reason: impl Into<String>) -> ConfigError {
@@ -510,6 +525,16 @@ mod tests {
         assert_eq!(blocking.allow, ["*.cdn.example.com"]);
         assert_eq!(blocking.deny_regex, [r"^ad[0-9]+\."]);
         assert_eq!(blocking.allow_regex, [r"^good\."]);
+    }
+
+    // Errors end up in logs read line by line (journald, Loki…).
+    #[test]
+    fn parse_error_is_one_line_with_its_position() {
+        let error = invalid("[cache]\nsize = 1\n[blocking]\ndenny = []");
+
+        assert!(!error.contains('\n'), "{error:?}");
+        assert!(error.contains("line 4"), "{error}");
+        assert!(error.contains("denny"), "{error}");
     }
 
     #[test]
