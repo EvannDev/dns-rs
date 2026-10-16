@@ -15,6 +15,10 @@ use crate::lists::{BareDomains, ParsedList, is_valid_domain};
 
 const DNS_PORT: u16 = 53;
 
+/// Shortest blocklist refresh interval: list providers would otherwise see
+/// every replica download every few seconds.
+const MIN_REFRESH: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
@@ -71,10 +75,13 @@ impl Default for CacheConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct BlockingConfig {
     pub mode: BlockingMode,
+    /// How often blocklists are downloaded again.
+    #[serde(with = "humantime_serde")]
+    pub refresh: Duration,
     /// Blocklists to subscribe to.
     pub lists: Vec<ListConfig>,
     /// `example.com` blocks that name, `*.example.com` it and its subdomains.
@@ -83,6 +90,20 @@ pub struct BlockingConfig {
     pub allow: Vec<String>,
     pub deny_regex: Vec<String>,
     pub allow_regex: Vec<String>,
+}
+
+impl Default for BlockingConfig {
+    fn default() -> Self {
+        Self {
+            mode: BlockingMode::default(),
+            refresh: Duration::from_secs(24 * 60 * 60),
+            lists: Vec::new(),
+            deny: Vec::new(),
+            allow: Vec::new(),
+            deny_regex: Vec::new(),
+            allow_regex: Vec::new(),
+        }
+    }
 }
 
 /// A blocklist subscription: a URL, or `{ url = "…", wildcard = true }` when
@@ -244,6 +265,27 @@ impl Config {
         Ok(config)
     }
 
+    /// Settings that differ in `next` but only apply on restart: they set up
+    /// sockets, the upstream client and the cache.
+    #[must_use]
+    pub fn restart_required(&self, next: &Config) -> Vec<&'static str> {
+        [
+            ("server.listen", self.server.listen != next.server.listen),
+            (
+                "upstream.server",
+                self.upstream.server != next.upstream.server,
+            ),
+            (
+                "upstream.timeout",
+                self.upstream.timeout != next.upstream.timeout,
+            ),
+            ("cache.size", self.cache.size != next.cache.size),
+        ]
+        .into_iter()
+        .filter_map(|(setting, changed)| changed.then_some(setting))
+        .collect()
+    }
+
     /// Parses and validates a TOML document.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
         let config = parse_toml(text)?;
@@ -270,6 +312,9 @@ impl Config {
     fn validate(&self) -> Result<(), ConfigError> {
         if self.upstream.timeout.is_zero() {
             return Err(invalid("upstream.timeout", "must be greater than zero"));
+        }
+        if self.blocking.refresh < MIN_REFRESH {
+            return Err(invalid("blocking.refresh", "must be at least 1 minute"));
         }
         let blocking = &self.blocking;
         for (field, patterns) in [
@@ -620,6 +665,56 @@ mod tests {
         assert!(source("http://example.org/hosts").is_insecure());
         assert!(!source("https://example.org/hosts").is_insecure());
         assert!(!source("file:///etc/dns-rs/mine.txt").is_insecure());
+    }
+
+    #[test]
+    fn lists_are_refreshed_daily_by_default() {
+        let config = Config::from_toml("").unwrap();
+
+        assert_eq!(config.blocking.refresh, Duration::from_secs(24 * 60 * 60));
+    }
+
+    #[test]
+    fn refresh_interval_is_configurable() {
+        let config = Config::from_toml("[blocking]\nrefresh = \"6h\"").unwrap();
+
+        assert_eq!(config.blocking.refresh, Duration::from_secs(6 * 60 * 60));
+    }
+
+    // List providers would see every replica download every few seconds.
+    #[test]
+    fn refresh_more_often_than_every_minute_is_rejected() {
+        let error = invalid("[blocking]\nrefresh = \"30s\"");
+
+        assert!(error.contains("blocking.refresh"), "{error}");
+    }
+
+    #[test]
+    fn blocking_changes_apply_without_restart() {
+        let current = Config::default();
+        let next =
+            Config::from_toml("[blocking]\ndeny = ['ads.example.com']\nrefresh = '1h'").unwrap();
+
+        assert_eq!(current.restart_required(&next), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn server_upstream_and_cache_changes_need_a_restart() {
+        let current = Config::default();
+        let next = Config::from_toml(
+            "[server]\nlisten = '127.0.0.1:5300'\n[upstream]\nserver = '9.9.9.9'\ntimeout = '1s'\n[cache]\nsize = 5",
+        )
+        .unwrap();
+
+        assert_eq!(
+            current.restart_required(&next),
+            [
+                "server.listen",
+                "upstream.server",
+                "upstream.timeout",
+                "cache.size"
+            ]
+        );
     }
 
     #[test]
