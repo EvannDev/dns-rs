@@ -2,7 +2,9 @@
 
 pub mod cache;
 pub mod config;
+pub mod filter;
 pub mod handler;
+pub mod lists;
 pub mod server;
 pub mod upstream;
 pub mod wire;

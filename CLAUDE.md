@@ -9,6 +9,8 @@ container and, later, as multiple stateless replicas on Kubernetes.
   Cycle: write the test, see it fail for the expected reason, make it pass with the
   simplest code, then refactor with the tests green. A PR that adds behaviour
   without a test that covers it is incomplete.
+- **A test written after the code must be proven to bite**: break the code on
+  purpose, watch the test fail, restore.
 - **Tests describe behaviour, not implementation.** Name them after what the
   system does (`repeated_query_is_served_from_cache`), cite the RFC when a test
   encodes protocol rules.
@@ -30,6 +32,8 @@ Single crate for now (`crates/dns-rs`), split into crates only when needed.
 | `server` | UDP/TCP listeners, UDP truncation, malformed-input handling |
 | `handler` | Request validation, cache lookup, upstream forwarding |
 | `cache` | TTL-aware response cache, negative caching (RFC 2308) |
+| `filter` | Pure allow/deny engine: exact, subtree (`*.domain`), regex; allow wins |
+| `lists` | Blocklist parsing: hosts, plain domains, ABP `\|\|domain^` / `@@` |
 | `upstream` | `Upstream` trait; `DnsUpstream` = UDP with TCP fallback, anti-spoofing |
 | `wire` | DNS over TCP length-prefix framing |
 | `config` | `DNS_RS_*` environment variables |
