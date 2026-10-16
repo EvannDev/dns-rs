@@ -4,7 +4,7 @@
 //! upstream client or the cache are reported as needing a restart.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
@@ -115,6 +115,9 @@ impl<U: Upstream> Reloader<U> {
             let missing = store.missing(&next.blocking.lists);
             if !missing.is_empty() {
                 let results = self.loader.load_each(&missing).await;
+                // Recorded now, before the policy is built: if the build
+                // failed, these series would describe lists not in force,
+                // but validation leaves no known cause for that failure.
                 record_lists(&self.metrics, &results);
                 store.update(results);
             }
@@ -203,8 +206,6 @@ impl<U: Upstream> Reloader<U> {
     }
 }
 
-/// Compiles the policy on a blocking thread: hundreds of thousands of rules
-/// take long enough to delay queries if built on a runtime worker.
 fn install<U: Upstream>(handler: &Handler<U>, metrics: &Metrics, policy: Policy) {
     metrics.set_blocking_rules(policy.filter.deny_count());
     handler.set_policy(policy);
@@ -214,13 +215,15 @@ fn record_lists(metrics: &Metrics, results: &[(ListConfig, ListResult)]) {
     for (config, result) in results {
         match result {
             Ok(list) => {
-                metrics.record_list_loaded(&config.source, list.deny.len(), SystemTime::now());
+                metrics.record_list_loaded(&config.source, list.deny.len());
             }
             Err(error) => metrics.record_list_failed(&config.source, error),
         }
     }
 }
 
+/// Compiles the policy on a blocking thread: hundreds of thousands of rules
+/// take long enough to delay queries if built on a runtime worker.
 async fn build_policy(blocking: &BlockingConfig, store: &ListStore) -> Result<Policy, ConfigError> {
     let blocking = blocking.clone();
     let lists = store.snapshot();
@@ -242,6 +245,8 @@ mod tests {
 
     use hickory_proto::op::{Message, MessageType, OpCode, Query};
     use hickory_proto::rr::{Name, RecordType};
+
+    use std::time::SystemTime;
 
     use super::*;
     use crate::cache::DnsCache;
@@ -271,7 +276,10 @@ mod tests {
         fn new() -> Self {
             Self {
                 dir: tempfile::tempdir().unwrap(),
-                metrics: Arc::new(Metrics::new()),
+                metrics: Arc::new(
+                    Metrics::new()
+                        .with_clock(|| SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+                ),
             }
         }
 
@@ -654,8 +662,11 @@ mod tests {
             assert!(has(&setup, "dns_rs_blocking_rules 3"), "{}", text(&setup));
             let rules = format!("{} 2", list_series(&setup, "dns_rs_blocklist_rules"));
             assert!(has(&setup, &rules), "{}", text(&setup));
-            let success = list_series(&setup, "dns_rs_blocklist_last_success_timestamp_seconds");
-            assert!(text(&setup).contains(&success), "{}", text(&setup));
+            let success = format!(
+                "{} 1700000000",
+                list_series(&setup, "dns_rs_blocklist_last_success_timestamp_seconds")
+            );
+            assert!(has(&setup, &success), "{}", text(&setup));
         }
 
         #[tokio::test]

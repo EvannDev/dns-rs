@@ -3,6 +3,7 @@
 //! Each replica exposes its own counters; Prometheus sums them. Label values
 //! are bounded: nothing a client sends can create new series (ADR 0002).
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hickory_proto::op::ResponseCode;
@@ -61,6 +62,7 @@ pub struct Metrics {
     list_failures: Family<ListFailureLabels, Counter>,
     config_reloads: Family<ResultLabels, Counter>,
     config_valid: Gauge,
+    clock: Box<dyn Fn() -> SystemTime + Send + Sync>,
 }
 
 /// A gauge computed at scrape time.
@@ -157,6 +159,7 @@ impl Metrics {
             list_failures,
             config_reloads,
             config_valid,
+            clock: Box::new(SystemTime::now),
         }
     }
 
@@ -192,22 +195,32 @@ impl Metrics {
 }
 
 /// The list's URL without credentials, query or fragment: /metrics has no
-/// authentication, and private list URLs may carry a token.
+/// authentication, and private list URLs may carry a token. When something
+/// was removed, a short fingerprint of the full URL is appended, so lists
+/// that differ only by it (`?list=ads`, `?list=trackers`) keep separate
+/// series; 32 bits do not reveal the removed part.
 fn list_label(source: &ListSource) -> String {
-    match source {
-        ListSource::File(_) => source.to_string(),
-        ListSource::Http(url) => match Url::parse(url) {
-            Ok(mut url) => {
-                let _ = url.set_username("");
-                let _ = url.set_password(None);
-                url.set_query(None);
-                url.set_fragment(None);
-                url.to_string()
-            }
-            // Validation accepted it, but it does not parse: show nothing of it.
-            Err(_) => "unparsable-url".to_owned(),
-        },
+    let ListSource::Http(full) = source else {
+        return source.to_string();
+    };
+    let Ok(mut url) = Url::parse(full) else {
+        // Validation rejects URLs that do not parse.
+        return "unparsable-url".to_owned();
+    };
+    let sensitive = !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some();
+    if !sensitive {
+        return url.to_string();
     }
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    let mut hasher = DefaultHasher::new();
+    full.hash(&mut hasher);
+    format!("{url}#{:08x}", hasher.finish() & 0xffff_ffff)
 }
 
 fn saturating_i64(value: usize) -> i64 {
@@ -286,7 +299,15 @@ impl Metrics {
     }
 
     /// A list loaded with `rules` deny rules at `at`.
-    pub fn record_list_loaded(&self, source: &ListSource, rules: usize, at: SystemTime) {
+    /// Takes the time from `clock` instead of the system clock (tests).
+    #[must_use]
+    pub fn with_clock(mut self, clock: impl Fn() -> SystemTime + Send + Sync + 'static) -> Self {
+        self.clock = Box::new(clock);
+        self
+    }
+
+    pub fn record_list_loaded(&self, source: &ListSource, rules: usize) {
+        let at = (self.clock)();
         let labels = ListLabels {
             list: list_label(source),
         };
@@ -558,10 +579,10 @@ mod tests {
 
         #[test]
         fn loaded_list_exposes_its_rules_and_success_time() {
-            let metrics = Metrics::new();
             let at = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+            let metrics = Metrics::new().with_clock(move || at);
 
-            metrics.record_list_loaded(&source("https://lists.example/hosts"), 500, at);
+            metrics.record_list_loaded(&source("https://lists.example/hosts"), 500);
 
             let text = metrics.encode();
             assert!(
@@ -609,12 +630,11 @@ mod tests {
             metrics.record_list_loaded(
                 &source("https://user:secret@lists.example/hosts?token=abc#part"),
                 1,
-                UNIX_EPOCH,
             );
 
             let text = metrics.encode();
             assert!(
-                text.contains(r#"list="https://lists.example/hosts""#),
+                text.contains(r#"list="https://lists.example/hosts#"#),
                 "{text}"
             );
             for secret in ["user", "secret", "token", "abc", "part"] {
@@ -623,10 +643,44 @@ mod tests {
         }
 
         #[test]
+        fn plain_url_label_is_the_url_itself() {
+            let metrics = Metrics::new();
+
+            metrics.record_list_loaded(&source("https://lists.example/hosts"), 1);
+
+            assert!(
+                metrics
+                    .encode()
+                    .contains(r#"list="https://lists.example/hosts"}"#)
+            );
+        }
+
+        // Lists that differ only by their query string are distinct lists:
+        // they must not share series, nor forget each other's.
+        #[test]
+        fn lists_differing_by_query_keep_separate_series() {
+            let metrics = Metrics::new();
+            let ads = source("https://lists.example/hosts?list=ads");
+            let trackers = source("https://lists.example/hosts?list=trackers");
+            metrics.record_list_loaded(&ads, 10);
+            metrics.record_list_loaded(&trackers, 20);
+
+            metrics.forget_list(&ads);
+
+            let text = metrics.encode();
+            let rules: Vec<&str> = text
+                .lines()
+                .filter(|l| l.starts_with("dns_rs_blocklist_rules{"))
+                .collect();
+            assert_eq!(rules.len(), 1, "{text}");
+            assert!(rules[0].ends_with(" 20"), "{text}");
+        }
+
+        #[test]
         fn file_list_label_is_its_url() {
             let metrics = Metrics::new();
 
-            metrics.record_list_loaded(&source("file:///etc/dns-rs/mine.txt"), 3, UNIX_EPOCH);
+            metrics.record_list_loaded(&source("file:///etc/dns-rs/mine.txt"), 3);
 
             assert!(
                 metrics
@@ -639,7 +693,7 @@ mod tests {
         fn forgotten_list_has_no_series_left() {
             let metrics = Metrics::new();
             let list = source("https://lists.example/hosts");
-            metrics.record_list_loaded(&list, 500, UNIX_EPOCH);
+            metrics.record_list_loaded(&list, 500);
             metrics.record_list_failed(&list, &FetchError::Timeout);
 
             metrics.forget_list(&list);

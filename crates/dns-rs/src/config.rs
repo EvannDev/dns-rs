@@ -231,7 +231,10 @@ impl TryFrom<String> for ListSource {
             };
         }
         if value.starts_with("https://") || value.starts_with("http://") {
-            return Ok(Self::Http(value));
+            return match reqwest::Url::parse(&value) {
+                Ok(_) => Ok(Self::Http(value)),
+                Err(error) => Err(format!("list {value:?}: invalid URL: {error}")),
+            };
         }
         Err(format!(
             "list {value:?}: unsupported source, expected file://, http:// or https://"
@@ -619,6 +622,19 @@ mod tests {
         let error = invalid("[blocking]\nlists = ['ftp://example.org/hosts']");
 
         assert!(error.contains("ftp://example.org/hosts"), "{error}");
+    }
+
+    #[test]
+    fn list_url_that_does_not_parse_is_rejected() {
+        for url in [
+            "https://exa mple.org/hosts",
+            "https://",
+            "http://[::1/hosts",
+        ] {
+            let error = invalid(&format!("[blocking]\nlists = ['{url}']"));
+
+            assert!(error.contains(url), "{url}: {error}");
+        }
     }
 
     #[test]
