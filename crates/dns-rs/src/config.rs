@@ -565,9 +565,17 @@ mod tests {
         assert_eq!(
             lists(
                 "['https://a.example/hosts', { url = 'https://b.example/list', wildcard = true }]"
-            )
-            .len(),
-            2
+            ),
+            [
+                ListConfig {
+                    source: ListSource::Http("https://a.example/hosts".to_owned()),
+                    bare_domains: BareDomains::Exact,
+                },
+                ListConfig {
+                    source: ListSource::Http("https://b.example/list".to_owned()),
+                    bare_domains: BareDomains::WithSubdomains,
+                },
+            ]
         );
     }
 

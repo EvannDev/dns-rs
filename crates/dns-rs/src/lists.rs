@@ -200,6 +200,29 @@ mod tests {
     }
 
     #[test]
+    fn malformed_wildcards_are_skipped() {
+        for line in [
+            "*.",
+            "*.*.example.com",
+            "*.com",
+            "*example.com",
+            "a.*.example.com",
+        ] {
+            let list = parse_list_with(line, BareDomains::WithSubdomains);
+
+            assert_eq!(list.deny, [], "{line}");
+            assert_eq!(list.skipped, 1, "{line}");
+        }
+    }
+
+    #[test]
+    fn wildcard_line_is_one_subtree_whatever_the_bare_mode() {
+        let list = parse_list_with("*.ads.example.com", BareDomains::WithSubdomains);
+
+        assert_eq!(list.deny, vec![subtree("ads.example.com")]);
+    }
+
+    #[test]
     fn bare_domains_can_cover_subdomains() {
         let list = parse_list_with("ads.example.com", BareDomains::WithSubdomains);
 
