@@ -15,7 +15,6 @@ use prometheus_client::metrics::gauge::{ConstGauge, Gauge};
 use prometheus_client::metrics::histogram::{Histogram, exponential_buckets};
 use prometheus_client::metrics::info::Info;
 use prometheus_client::registry::{Registry, Unit};
-use reqwest::Url;
 
 use crate::config::ListSource;
 use crate::handler::Source;
@@ -193,42 +192,6 @@ impl Metrics {
     }
 }
 
-/// The list's URL without credentials, query or fragment: /metrics has no
-/// authentication, and private list URLs may carry a token. When something
-/// was removed, a short fingerprint of the full URL is appended, so lists
-/// that differ only by it (`?list=ads`, `?list=trackers`) keep separate
-/// series; 32 bits do not reveal the removed part.
-fn list_label(source: &ListSource) -> String {
-    let ListSource::Http(full) = source else {
-        return source.to_string();
-    };
-    let Ok(mut url) = Url::parse(full) else {
-        // Validation rejects URLs that do not parse.
-        return "unparsable-url".to_owned();
-    };
-    let sensitive = !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some();
-    if !sensitive {
-        return url.to_string();
-    }
-    let _ = url.set_username("");
-    let _ = url.set_password(None);
-    url.set_query(None);
-    url.set_fragment(None);
-    format!("{url}#{:08x}", fnv1a_64(full.as_bytes()) & 0xffff_ffff)
-}
-
-/// FNV-1a, 64 bits: a fixed algorithm, so every build and every replica
-/// gives a list the same label (std's `DefaultHasher` may change between
-/// Rust versions).
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
-}
-
 fn saturating_i64(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -315,7 +278,7 @@ impl Metrics {
     pub fn record_list_loaded(&self, source: &ListSource, rules: usize) {
         let at = (self.clock)();
         let labels = ListLabels {
-            list: list_label(source),
+            list: source.label(),
         };
         self.list_rules
             .get_or_create(&labels)
@@ -338,7 +301,7 @@ impl Metrics {
         };
         self.list_failures
             .get_or_create(&ListFailureLabels {
-                list: list_label(source),
+                list: source.label(),
                 reason,
             })
             .inc();
@@ -346,7 +309,7 @@ impl Metrics {
 
     /// Drops the series of a list no longer configured.
     pub fn forget_list(&self, source: &ListSource) {
-        let list = list_label(source);
+        let list = source.label();
         let labels = ListLabels { list: list.clone() };
         self.list_rules.remove(&labels);
         self.list_last_success.remove(&labels);
