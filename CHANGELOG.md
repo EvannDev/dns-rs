@@ -23,6 +23,11 @@ All notable changes to dns-rs are documented here. The format is based on
   configuration keeps working (#13).
 - `blocking.refresh` (default `24h`, at least `1m`): blocklists are downloaded
   again on this schedule. A list that fails keeps its last valid version (#13).
+- HTTP endpoint on `http.listen` (default `0.0.0.0:8080`, override
+  `DNS_RS_HTTP_LISTEN`, restart-only): `/healthz`, `/readyz` and `/metrics`
+  in the OpenMetrics text format, with `dns_rs_queries_total{source,rcode,type}`,
+  the `dns_rs_query_duration_seconds{source}` histogram and
+  `dns_rs_build_info{version}`. Label values are bounded (#15).
 
 ### Changed
 

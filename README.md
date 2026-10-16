@@ -5,7 +5,8 @@ run in a container and scale as stateless replicas.
 
 > Status: caching DNS forwarder with blocking (blocklists over HTTPS or from
 > files, allow/deny rules, regexes) that reloads its configuration and
-> refreshes blocklists while running. Next: observability (metrics, REST API).
+> refreshes blocklists while running. It serves Prometheus metrics and Kubernetes probes over HTTP.
+> Next: more metrics, a REST API.
 
 ## Run
 
@@ -22,6 +23,7 @@ A few can be overridden by environment variables, handy in containers:
 |---|---|
 | `DNS_RS_CONFIG` | Path of the TOML file (defaults apply without it) |
 | `DNS_RS_LISTEN` | `server.listen` |
+| `DNS_RS_HTTP_LISTEN` | `http.listen` |
 | `DNS_RS_UPSTREAM` | `upstream.server` |
 | `DNS_RS_UPSTREAM_TIMEOUT_MS` | `upstream.timeout` |
 | `DNS_RS_CACHE_SIZE` | `cache.size` |
@@ -31,7 +33,7 @@ A few can be overridden by environment variables, handy in containers:
 
 dns-rs reads the configuration file every 10 seconds (by content, so a
 Kubernetes ConfigMap update counts as an edit) and immediately on `SIGHUP`.
-Changes to `[blocking]` apply at once. `server.listen`, `upstream.server`,
+Changes to `[blocking]` apply at once. `server.listen`, `http.listen`, `upstream.server`,
 `upstream.timeout` and `cache.size` need a restart: dns-rs logs
 "configuration changes need a restart to apply" once and keeps the running
 values. An invalid or missing file is rejected (logged once) and the previous
@@ -43,7 +45,7 @@ configuration reload only new lists are downloaded; removed lists stop
 blocking.
 
 See the [documentation](docs/README.md) for the configuration reference,
-blocklist formats and the log format.
+blocklist formats, metrics and the log format.
 
 ## Develop
 

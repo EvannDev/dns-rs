@@ -12,6 +12,7 @@ Durations use the humantime format (`2s`, `500ms`, `24h`).
 | Key | Default | Meaning |
 |---|---|---|
 | `server.listen` | `0.0.0.0:53` | Address of the UDP and TCP listeners |
+| `http.listen` | `0.0.0.0:8080` | Address of the HTTP endpoint for probes and metrics (see [Metrics and probes](metrics.md)) |
 | `upstream.server` | `1.1.1.1:53` | Resolver queries are forwarded to; the port defaults to 53 |
 | `upstream.timeout` | `2s` | Upstream timeout; must be greater than zero |
 | `cache.size` | `10000` | Maximum number of cached responses |
@@ -29,6 +30,7 @@ Durations use the humantime format (`2s`, `500ms`, `24h`).
 |---|---|
 | `DNS_RS_CONFIG` | Path of the TOML file |
 | `DNS_RS_LISTEN` | `server.listen` |
+| `DNS_RS_HTTP_LISTEN` | `http.listen` |
 | `DNS_RS_UPSTREAM` | `upstream.server` |
 | `DNS_RS_UPSTREAM_TIMEOUT_MS` | `upstream.timeout`, in milliseconds |
 | `DNS_RS_CACHE_SIZE` | `cache.size` |
@@ -55,7 +57,7 @@ Beyond syntax, these are rejected:
 
 The file is read every 10 seconds, compared by content, and immediately on
 `SIGHUP`. Changes to `[blocking]` apply at once. Changes to `server.listen`,
-`upstream.server`, `upstream.timeout` and `cache.size` need a restart: dns-rs
+`http.listen`, `upstream.server`, `upstream.timeout` and `cache.size` need a restart: dns-rs
 logs `configuration changes need a restart to apply` once, listing the
 settings, and keeps the running values. An invalid or missing file is
 rejected (logged once as `configuration rejected, keeping the previous one`)

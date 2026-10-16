@@ -61,6 +61,8 @@ Single crate for now (`crates/dns-rs`), split into crates only when needed.
 | `sources` | Loads blocklists (`file://`, `https://`) with bounded concurrency, timeout, size limit and no HTTPS→HTTP redirect; failures skip the list; `ListStore` keeps the last valid version of each list |
 | `reload` | `Reloader`: config polling (10 s) and SIGHUP, blocklist refresh, restart-only settings reported not applied |
 | `query_log` | One log line per query, target `dns_rs::query` |
+| `metrics` | Prometheus metrics (OpenMetrics text), bounded label values |
+| `http` | `/healthz`, `/readyz` and `/metrics` on `http.listen` |
 
 Design constraint for every feature: a replica must stay **stateless** (config
 and rules come from a shared source, cache is local, logs/metrics are exported)
