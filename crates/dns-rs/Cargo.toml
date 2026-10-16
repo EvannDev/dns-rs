@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+arc-swap = "1.9.2"
 hickory-proto = "0.26.3"
 regex = "1.13.1"
 thiserror = "2.0.21"

@@ -1,10 +1,15 @@
 //! Turns a client request into a response: validation, cache, then upstream.
 
+use std::sync::Arc;
 use std::time::Instant;
+
+use arc_swap::ArcSwap;
 
 use hickory_proto::op::{Edns, Message, OpCode, Query, ResponseCode};
 
+use crate::blocking::{Policy, blocked_answer};
 use crate::cache::{CacheKey, DnsCache};
+use crate::filter::Verdict;
 use crate::upstream::Upstream;
 
 /// UDP payload size advertised to EDNS clients (DNS flag day 2020).
@@ -43,11 +48,22 @@ pub struct Resolution {
 pub struct Handler<U> {
     upstream: U,
     cache: DnsCache,
+    policy: ArcSwap<Policy>,
 }
 
 impl<U: Upstream> Handler<U> {
+    /// A handler that blocks nothing until [`Handler::set_policy`] is called.
     pub fn new(upstream: U, cache: DnsCache) -> Self {
-        Self { upstream, cache }
+        Self {
+            upstream,
+            cache,
+            policy: ArcSwap::from_pointee(Policy::allow_all()),
+        }
+    }
+
+    /// Replaces the blocking policy; takes effect for the next query.
+    pub fn set_policy(&self, policy: Policy) {
+        self.policy.store(Arc::new(policy));
     }
 
     /// Answers `request`. Never fails: errors become DNS response codes.
@@ -58,6 +74,14 @@ impl<U: Upstream> Handler<U> {
         let [question] = request.queries.as_slice() else {
             return resolved(reply(request, ResponseCode::FormErr), Source::Rejected);
         };
+
+        let policy = self.policy.load();
+        if policy.filter.check(&question.name().to_ascii()) == Verdict::Blocked {
+            let (code, answers) = blocked_answer(question, policy.mode);
+            let mut response = reply(request, code);
+            response.answers = answers;
+            return resolved(response, Source::Blocked);
+        }
 
         let key = CacheKey::from(question);
         if let Some(cached) = self.cache.get(&key, Instant::now()) {
@@ -126,6 +150,8 @@ mod tests {
     use hickory_proto::rr::{Name, RData, Record, RecordType};
 
     use super::*;
+    use crate::blocking::BlockingMode;
+    use crate::filter::{FilterBuilder, Rule};
     use crate::upstream::UpstreamError;
 
     /// Upstream double answering every A query with 192.0.2.1, or failing.
@@ -176,6 +202,74 @@ mod tests {
             RecordType::A,
         ));
         msg
+    }
+
+    fn block(handler: &Handler<FakeUpstream>, deny: &str, mode: BlockingMode) {
+        let mut builder = FilterBuilder::new();
+        builder.deny(Rule::from_pattern(deny));
+        handler.set_policy(Policy {
+            filter: builder.build().unwrap(),
+            mode,
+        });
+    }
+
+    #[tokio::test]
+    async fn blocked_domain_is_answered_locally() {
+        let handler = handler(FakeUpstream::default());
+        block(&handler, "*.ads.example", BlockingMode::Null);
+
+        let resolution = handler.handle(&request(7, "x.ads.example.")).await;
+
+        assert_eq!(resolution.source, Source::Blocked);
+        assert_eq!(handler.upstream.calls.load(Ordering::SeqCst), 0);
+        let response = resolution.response;
+        assert_eq!(response.metadata.id, 7);
+        assert_eq!(response.queries, request(7, "x.ads.example.").queries);
+        assert_eq!(response.answers[0].data, RData::A(A(Ipv4Addr::UNSPECIFIED)));
+    }
+
+    #[tokio::test]
+    async fn blocking_mode_shapes_the_response() {
+        let handler = handler(FakeUpstream::default());
+        block(&handler, "ads.example", BlockingMode::NxDomain);
+
+        let response = handler.handle(&request(7, "ads.example.")).await.response;
+
+        assert_eq!(response.metadata.response_code, ResponseCode::NXDomain);
+    }
+
+    #[tokio::test]
+    async fn domains_not_blocked_are_still_forwarded() {
+        let handler = handler(FakeUpstream::default());
+        block(&handler, "ads.example", BlockingMode::Null);
+
+        let resolution = handler.handle(&request(7, "example.com.")).await;
+
+        assert_eq!(resolution.source, Source::Upstream);
+    }
+
+    // The filter runs before the cache: a new rule applies at once, even to
+    // names answered moments ago.
+    #[tokio::test]
+    async fn new_policy_applies_immediately_even_to_cached_names() {
+        let handler = handler(FakeUpstream::default());
+        handler.handle(&request(1, "example.com.")).await;
+
+        block(&handler, "example.com", BlockingMode::Null);
+        let resolution = handler.handle(&request(2, "example.com.")).await;
+
+        assert_eq!(resolution.source, Source::Blocked);
+    }
+
+    #[tokio::test]
+    async fn policy_can_be_lifted() {
+        let handler = handler(FakeUpstream::default());
+        block(&handler, "example.com", BlockingMode::Null);
+
+        handler.set_policy(Policy::allow_all());
+        let resolution = handler.handle(&request(7, "example.com.")).await;
+
+        assert_eq!(resolution.source, Source::Upstream);
     }
 
     #[tokio::test]

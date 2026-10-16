@@ -1,5 +1,6 @@
 //! dns-rs: a network-wide DNS sinkhole, built to run as stateless replicas.
 
+pub mod blocking;
 pub mod cache;
 pub mod config;
 pub mod filter;
