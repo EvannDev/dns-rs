@@ -3,13 +3,19 @@
 # unless stated otherwise.
 #
 # The file is read again every 10 s and on SIGHUP. [blocking] changes apply
-# at once; server.listen, upstream.* and cache.size need a restart (logged
+# at once; server.listen, http.listen, upstream.* and cache.size need a restart (logged
 # once, not applied). An invalid file is rejected and the previous
 # configuration keeps working.
 
 [server]
 # UDP and TCP listen address. Override: DNS_RS_LISTEN
 listen = "0.0.0.0:53"
+
+[http]
+# Probes (/healthz, /readyz) and Prometheus metrics (/metrics), read-only and
+# without authentication: on a shared network, bind to 127.0.0.1:8080 or
+# restrict access (Kubernetes NetworkPolicy). Override: DNS_RS_HTTP_LISTEN
+listen = "0.0.0.0:8080"
 
 [upstream]
 # Resolver queries are forwarded to; the port defaults to 53.

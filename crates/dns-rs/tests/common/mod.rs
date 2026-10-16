@@ -10,6 +10,7 @@ use std::time::Duration;
 use dns_rs::blocking::Policy;
 use dns_rs::cache::DnsCache;
 use dns_rs::handler::Handler;
+use dns_rs::metrics::Metrics;
 use dns_rs::server::{serve_tcp, serve_udp};
 use dns_rs::upstream::DnsUpstream;
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
@@ -52,6 +53,7 @@ pub struct TestServer {
     pub udp: SocketAddr,
     pub tcp: SocketAddr,
     pub upstream_calls: Arc<AtomicUsize>,
+    pub metrics: Arc<Metrics>,
 }
 
 pub async fn start_server() -> TestServer {
@@ -70,9 +72,18 @@ pub async fn start_server_with_policy(policy: Policy) -> TestServer {
         udp: udp_socket.local_addr().unwrap(),
         tcp: tcp_listener.local_addr().unwrap(),
         upstream_calls,
+        metrics: Arc::new(Metrics::new()),
     };
-    tokio::spawn(serve_udp(udp_socket, Arc::clone(&handler)));
-    tokio::spawn(serve_tcp(tcp_listener, handler));
+    tokio::spawn(serve_udp(
+        udp_socket,
+        Arc::clone(&handler),
+        Arc::clone(&server.metrics),
+    ));
+    tokio::spawn(serve_tcp(
+        tcp_listener,
+        handler,
+        Arc::clone(&server.metrics),
+    ));
     server
 }
 

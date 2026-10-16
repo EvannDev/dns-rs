@@ -23,7 +23,7 @@ Turn it off without silencing the rest: `RUST_LOG=info,dns_rs::query=off`.
 
 | Level | Message | Meaning |
 |---|---|---|
-| info | `dns-rs started` | Listening; shows `listen` and `upstream` |
+| info | `dns-rs started` | Listening; shows `listen`, `http_listen` and `upstream` |
 | info | `blocking policy loaded` | A policy is in force; shows the rule count and mode |
 | info | `blocklist loaded` | Per list: `deny`, `allow` and `skipped` counts |
 | warn | `cannot load blocklist, skipped` | A list failed; the cause is in `error` |

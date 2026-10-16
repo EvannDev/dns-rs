@@ -23,6 +23,7 @@ const MIN_REFRESH: Duration = Duration::from_secs(60);
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     pub server: ServerConfig,
+    pub http: HttpConfig,
     pub upstream: UpstreamConfig,
     pub cache: CacheConfig,
     pub blocking: BlockingConfig,
@@ -39,6 +40,21 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: SocketAddr::from(([0, 0, 0, 0], DNS_PORT)),
+        }
+    }
+}
+
+/// The HTTP endpoint: health probes and metrics.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HttpConfig {
+    pub listen: SocketAddr,
+}
+
+impl Default for HttpConfig {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([0, 0, 0, 0], 8080)),
         }
     }
 }
@@ -271,6 +287,7 @@ impl Config {
     pub fn restart_required(&self, next: &Config) -> Vec<&'static str> {
         [
             ("server.listen", self.server.listen != next.server.listen),
+            ("http.listen", self.http.listen != next.http.listen),
             (
                 "upstream.server",
                 self.upstream.server != next.upstream.server,
@@ -296,6 +313,9 @@ impl Config {
     fn apply_env(&mut self, lookup: &impl Fn(&str) -> Option<String>) -> Result<(), ConfigError> {
         if let Some(listen) = env_value(lookup, "DNS_RS_LISTEN")? {
             self.server.listen = listen;
+        }
+        if let Some(listen) = env_value(lookup, "DNS_RS_HTTP_LISTEN")? {
+            self.http.listen = listen;
         }
         if let Some(DnsServer(server)) = env_value(lookup, "DNS_RS_UPSTREAM")? {
             self.upstream.server = server;
@@ -702,6 +722,29 @@ mod tests {
         assert!(source("http://example.org/hosts").is_insecure());
         assert!(!source("https://example.org/hosts").is_insecure());
         assert!(!source("file:///etc/dns-rs/mine.txt").is_insecure());
+    }
+
+    #[test]
+    fn http_endpoint_listens_on_8080_by_default() {
+        let config = Config::from_toml("").unwrap();
+
+        assert_eq!(config.http.listen, "0.0.0.0:8080".parse().unwrap());
+    }
+
+    #[test]
+    fn http_endpoint_address_is_configurable() {
+        let from_file = Config::from_toml("[http]\nlisten = '127.0.0.1:9100'").unwrap();
+        let from_env = Config::load(env(&[("DNS_RS_HTTP_LISTEN", "127.0.0.1:9200")])).unwrap();
+
+        assert_eq!(from_file.http.listen, "127.0.0.1:9100".parse().unwrap());
+        assert_eq!(from_env.http.listen, "127.0.0.1:9200".parse().unwrap());
+    }
+
+    #[test]
+    fn http_endpoint_change_needs_a_restart() {
+        let next = Config::from_toml("[http]\nlisten = '127.0.0.1:9100'").unwrap();
+
+        assert_eq!(Config::default().restart_required(&next), ["http.listen"]);
     }
 
     #[test]
