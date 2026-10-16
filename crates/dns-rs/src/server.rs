@@ -3,13 +3,14 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::timeout;
 
 use crate::handler::Handler;
+use crate::query_log;
 use crate::upstream::Upstream;
 use crate::wire::{read_tcp_message, write_tcp_message};
 
@@ -91,7 +92,18 @@ async fn respond<U: Upstream>(
             tracing::debug!(%peer, "ignoring a DNS response sent as a query");
             None
         }
-        Ok(request) => Some((handler.handle(&request).await, request.max_payload())),
+        Ok(request) => {
+            let started = Instant::now();
+            let resolution = handler.handle(&request).await;
+            query_log::record(
+                peer.ip(),
+                &request,
+                &resolution.response,
+                resolution.source,
+                started.elapsed(),
+            );
+            Some((resolution.response, request.max_payload()))
+        }
         Err(error) => {
             tracing::debug!(%peer, %error, "malformed query");
             formerr_from_header(bytes).map(|response| (response, MIN_UDP_PAYLOAD))

@@ -10,6 +10,36 @@ use crate::upstream::Upstream;
 /// UDP payload size advertised to EDNS clients (DNS flag day 2020).
 pub const EDNS_PAYLOAD: u16 = 1232;
 
+/// Where a response came from, for the query log and metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Cache,
+    Upstream,
+    Blocked,
+    /// The request was invalid or unsupported (FORMERR, NOTIMP).
+    Rejected,
+    /// The upstream could not answer (SERVFAIL).
+    Failed,
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Cache => "cache",
+            Self::Upstream => "upstream",
+            Self::Blocked => "blocked",
+            Self::Rejected => "rejected",
+            Self::Failed => "failed",
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct Resolution {
+    pub response: Message,
+    pub source: Source,
+}
+
 pub struct Handler<U> {
     upstream: U,
     cache: DnsCache,
@@ -21,30 +51,34 @@ impl<U: Upstream> Handler<U> {
     }
 
     /// Answers `request`. Never fails: errors become DNS response codes.
-    pub async fn handle(&self, request: &Message) -> Message {
+    pub async fn handle(&self, request: &Message) -> Resolution {
         if request.metadata.op_code != OpCode::Query {
-            return reply(request, ResponseCode::NotImp);
+            return resolved(reply(request, ResponseCode::NotImp), Source::Rejected);
         }
         let [question] = request.queries.as_slice() else {
-            return reply(request, ResponseCode::FormErr);
+            return resolved(reply(request, ResponseCode::FormErr), Source::Rejected);
         };
 
         let key = CacheKey::from(question);
         if let Some(cached) = self.cache.get(&key, Instant::now()) {
-            return answer(request, &cached);
+            return resolved(answer(request, &cached), Source::Cache);
         }
 
         match self.upstream.query(&upstream_query(question)).await {
             Ok(upstream) => {
                 self.cache.insert(key, &upstream, Instant::now());
-                answer(request, &upstream)
+                resolved(answer(request, &upstream), Source::Upstream)
             }
             Err(error) => {
                 tracing::warn!(%error, name = %question.name(), "upstream query failed");
-                reply(request, ResponseCode::ServFail)
+                resolved(reply(request, ResponseCode::ServFail), Source::Failed)
             }
         }
     }
+}
+
+fn resolved(response: Message, source: Source) -> Resolution {
+    Resolution { response, source }
 }
 
 /// A fresh recursive query for `question`, independent of the client's header.
@@ -145,10 +179,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn first_query_comes_from_upstream() {
+        let handler = handler(FakeUpstream::default());
+
+        let resolution = handler.handle(&request(7, "example.com.")).await;
+
+        assert_eq!(resolution.source, Source::Upstream);
+    }
+
+    #[tokio::test]
+    async fn repeated_query_comes_from_cache() {
+        let handler = handler(FakeUpstream::default());
+
+        handler.handle(&request(1, "example.com.")).await;
+        let resolution = handler.handle(&request(2, "example.com.")).await;
+
+        assert_eq!(resolution.source, Source::Cache);
+    }
+
+    #[tokio::test]
+    async fn upstream_failure_is_reported_as_failed() {
+        let handler = handler(FakeUpstream {
+            fail: true,
+            ..FakeUpstream::default()
+        });
+
+        let resolution = handler.handle(&request(7, "example.com.")).await;
+
+        assert_eq!(resolution.source, Source::Failed);
+    }
+
+    #[tokio::test]
+    async fn invalid_request_is_reported_as_rejected() {
+        let handler = handler(FakeUpstream::default());
+        let empty = Message::new(7, MessageType::Query, OpCode::Query);
+
+        let resolution = handler.handle(&empty).await;
+
+        assert_eq!(resolution.source, Source::Rejected);
+    }
+
+    #[tokio::test]
     async fn forwards_query_and_returns_upstream_answers() {
         let handler = handler(FakeUpstream::default());
 
-        let response = handler.handle(&request(7, "example.com.")).await;
+        let response = handler.handle(&request(7, "example.com.")).await.response;
 
         assert_eq!(response.metadata.response_code, ResponseCode::NoError);
         assert_eq!(response.answers.len(), 1);
@@ -159,7 +234,7 @@ mod tests {
     async fn response_header_matches_request() {
         let handler = handler(FakeUpstream::default());
 
-        let response = handler.handle(&request(7, "example.com.")).await;
+        let response = handler.handle(&request(7, "example.com.")).await.response;
 
         assert_eq!(response.metadata.id, 7);
         assert_eq!(response.metadata.message_type, MessageType::Response);
@@ -185,7 +260,7 @@ mod tests {
         let handler = handler(FakeUpstream::default());
 
         handler.handle(&request(1, "example.com.")).await;
-        let second = handler.handle(&request(2, "example.com.")).await;
+        let second = handler.handle(&request(2, "example.com.")).await.response;
 
         assert_eq!(handler.upstream.calls.load(Ordering::SeqCst), 1);
         assert_eq!(second.metadata.id, 2);
@@ -199,7 +274,7 @@ mod tests {
             ..FakeUpstream::default()
         });
 
-        let response = handler.handle(&request(7, "example.com.")).await;
+        let response = handler.handle(&request(7, "example.com.")).await.response;
 
         assert_eq!(response.metadata.id, 7);
         assert_eq!(response.metadata.response_code, ResponseCode::ServFail);
@@ -211,7 +286,7 @@ mod tests {
         let handler = handler(FakeUpstream::default());
         let empty = Message::new(7, MessageType::Query, OpCode::Query);
 
-        let response = handler.handle(&empty).await;
+        let response = handler.handle(&empty).await.response;
 
         assert_eq!(response.metadata.response_code, ResponseCode::FormErr);
         assert_eq!(handler.upstream.calls.load(Ordering::SeqCst), 0);
@@ -226,7 +301,7 @@ mod tests {
             RecordType::A,
         ));
 
-        let response = handler.handle(&msg).await;
+        let response = handler.handle(&msg).await.response;
 
         assert_eq!(response.metadata.response_code, ResponseCode::FormErr);
     }
@@ -237,7 +312,7 @@ mod tests {
         let mut msg = request(7, "example.com.");
         msg.metadata.op_code = OpCode::Update;
 
-        let response = handler.handle(&msg).await;
+        let response = handler.handle(&msg).await.response;
 
         assert_eq!(response.metadata.response_code, ResponseCode::NotImp);
         assert_eq!(response.metadata.op_code, OpCode::Update);
@@ -250,7 +325,7 @@ mod tests {
         let mut msg = request(7, "example.com.");
         msg.set_edns(Edns::new());
 
-        let response = handler.handle(&msg).await;
+        let response = handler.handle(&msg).await.response;
 
         let edns = response.edns.expect("OPT record in response");
         assert_eq!(edns.max_payload(), EDNS_PAYLOAD);
@@ -260,7 +335,7 @@ mod tests {
     async fn plain_request_gets_no_edns() {
         let handler = handler(FakeUpstream::default());
 
-        let response = handler.handle(&request(7, "example.com.")).await;
+        let response = handler.handle(&request(7, "example.com.")).await.response;
 
         assert!(response.edns.is_none());
     }

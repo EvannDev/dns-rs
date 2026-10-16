@@ -5,6 +5,7 @@ pub mod config;
 pub mod filter;
 pub mod handler;
 pub mod lists;
+pub mod query_log;
 pub mod server;
 pub mod upstream;
 pub mod wire;
