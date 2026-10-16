@@ -4,6 +4,11 @@ dns-rs serves a small HTTP endpoint on `http.listen` (default
 `0.0.0.0:8080`, override `DNS_RS_HTTP_LISTEN`). Changing the address needs a
 restart. If the address cannot be bound, dns-rs exits at startup.
 
+The endpoint has no authentication. Everything it serves is read-only, but
+metrics reveal traffic volumes and the version. On a shared network, bind it
+to loopback (`127.0.0.1:8080`) or, on Kubernetes, allow only the kubelet and
+Prometheus to reach it with a NetworkPolicy.
+
 | Path | Response |
 |---|---|
 | `/healthz` | `200` with `ok` while the process runs (liveness) |

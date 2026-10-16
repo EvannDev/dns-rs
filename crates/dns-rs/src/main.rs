@@ -50,6 +50,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding HTTP {http_listen}"))?;
     let http_state = HttpState::new(Arc::clone(&metrics));
+    // Ready means: DNS sockets bound and first policy installed (by
+    // Reloader::start above). Queries arriving before the servers are first
+    // polled wait in the kernel's socket queues; none is lost.
     http_state.set_ready();
     tracing::info!(%listen, %http_listen, upstream = %config.upstream.server, "dns-rs started");
 

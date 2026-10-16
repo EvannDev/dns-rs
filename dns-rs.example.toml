@@ -12,8 +12,9 @@
 listen = "0.0.0.0:53"
 
 [http]
-# Probes (/healthz, /readyz) and Prometheus metrics (/metrics).
-# Override: DNS_RS_HTTP_LISTEN
+# Probes (/healthz, /readyz) and Prometheus metrics (/metrics), read-only and
+# without authentication: on a shared network, bind to 127.0.0.1:8080 or
+# restrict access (Kubernetes NetworkPolicy). Override: DNS_RS_HTTP_LISTEN
 listen = "0.0.0.0:8080"
 
 [upstream]
