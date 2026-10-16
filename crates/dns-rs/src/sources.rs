@@ -600,6 +600,21 @@ mod tests {
         assert_eq!(lists.len(), 2);
     }
 
+    // A semaphore without permits would block forever.
+    #[tokio::test]
+    async fn zero_concurrency_still_loads_lists() {
+        let file = list_file("ads.example.com");
+
+        let lists = tokio::time::timeout(
+            Duration::from_secs(5),
+            loader_with(0).load(&[ListSource::File(file.path().into())]),
+        )
+        .await
+        .expect("load must not deadlock");
+
+        assert_eq!(lists.len(), 1);
+    }
+
     #[tokio::test]
     async fn concurrency_is_bounded() {
         let gauge = Arc::new(Gauge::default());
