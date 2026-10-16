@@ -12,10 +12,10 @@
 listen = "0.0.0.0:53"
 
 [http]
-# Probes (/healthz, /readyz), Prometheus metrics (/metrics) and the check API
-# (/api/v1/check/{domain}, which reveals your blocking rules), read-only and
-# without authentication: on a shared network, bind to 127.0.0.1:8080 or
-# restrict access (Kubernetes NetworkPolicy). Override: DNS_RS_HTTP_LISTEN
+# Probes (/healthz, /readyz) and Prometheus metrics (/metrics) are read-only
+# and without authentication: on a shared network, bind to 127.0.0.1:8080 or
+# restrict access (Kubernetes NetworkPolicy). The API (/api/v1/...) needs a
+# token, see below. Override: DNS_RS_HTTP_LISTEN
 listen = "0.0.0.0:8080"
 # The API (/api/v1/...) requires "Authorization: Bearer <token>" and is
 # disabled without a token. The token comes from DNS_RS_API_TOKEN or from

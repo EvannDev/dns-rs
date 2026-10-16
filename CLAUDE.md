@@ -62,7 +62,7 @@ Single crate for now (`crates/dns-rs`), split into crates only when needed.
 | `reload` | `Reloader`: config polling (10 s) and SIGHUP, blocklist refresh, restart-only settings reported not applied |
 | `query_log` | One log line per query, target `dns_rs::query` |
 | `metrics` | Prometheus metrics (OpenMetrics text), bounded label values |
-| `http` | `/healthz`, `/readyz`, `/metrics` and `/api/v1/check/{domain}` on `http.listen` |
+| `http` | `/healthz`, `/readyz`, `/metrics` and `/api/v1/check/{domain}` on `http.listen`; `/api/*` needs a bearer token |
 
 Design constraint for every feature: a replica must stay **stateless** (config
 and rules come from a shared source, cache is local, logs/metrics are exported)

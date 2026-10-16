@@ -4,11 +4,11 @@ dns-rs serves a small HTTP endpoint on `http.listen` (default
 `0.0.0.0:8080`, override `DNS_RS_HTTP_LISTEN`). Changing the address needs a
 restart. If the address cannot be bound, dns-rs exits at startup.
 
-The endpoint has no authentication. Everything it serves is read-only, but
-metrics reveal traffic volumes and the version, and `/api/v1/check` reveals
-your blocking rules and the lists they come from. On a shared network, bind it
-to loopback (`127.0.0.1:8080`) or, on Kubernetes, allow only the kubelet and
-Prometheus to reach it with a NetworkPolicy.
+`/healthz`, `/readyz` and `/metrics` have no authentication. Metrics reveal
+traffic volumes and the version, so on a shared network bind the endpoint to
+loopback (`127.0.0.1:8080`) or, on Kubernetes, allow only the kubelet and
+Prometheus to reach it with a NetworkPolicy. The API under `/api/` reveals
+your blocking rules and requires a token (see [Authentication](#authentication)).
 
 | Path | Response |
 |---|---|
@@ -16,6 +16,27 @@ Prometheus to reach it with a NetworkPolicy.
 | `/readyz` | `200` with `ready` once the DNS sockets are bound and the first blocking policy is installed; `503` with `starting` before that (readiness) |
 | `/metrics` | Metrics in the OpenMetrics text format (`application/openmetrics-text; version=1.0.0; charset=utf-8`) |
 | `/api/v1/check/{domain}` | JSON explanation of the blocking decision for a domain (see [Check API](#check-api)) |
+
+## Authentication
+
+Requests under `/api/` must carry `Authorization: Bearer <token>`. The scheme
+is case-insensitive. A missing or wrong token gets `401` with
+`WWW-Authenticate: Bearer` and `{"error":"missing or invalid API token"}`.
+
+The token comes from the `DNS_RS_API_TOKEN` environment variable or from the
+file named by `http.api_token_file` (surrounding whitespace is trimmed, so a
+mounted Secret works); the variable wins. It must have at least 16
+characters, otherwise dns-rs exits at startup without printing the token. It
+is not a TOML key, because the configuration file often ends up in a
+ConfigMap. Changing `http.api_token_file` needs a restart.
+
+Without a token the API is disabled: every request under `/api/` gets `403`,
+and dns-rs logs `API disabled: set DNS_RS_API_TOKEN or http.api_token_file to
+enable it` at startup. See [ADR 0012](adr/0012-api-requires-a-bearer-token.md).
+
+```
+curl -H "Authorization: Bearer $DNS_RS_API_TOKEN" http://localhost:8080/api/v1/check/example.com
+```
 
 ## Metrics
 
@@ -76,7 +97,7 @@ create new series. See
 
 ## Check API
 
-`GET /api/v1/check/{domain}` answers "why is this domain blocked, or not?"
+`GET /api/v1/check/{domain}` (token required) answers "why is this domain blocked, or not?"
 using the blocking policy in force, including after a reload. Nothing is
 queried upstream.
 
