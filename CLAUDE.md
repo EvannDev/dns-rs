@@ -40,7 +40,7 @@ Single crate for now (`crates/dns-rs`), split into crates only when needed.
 | `upstream` | `Upstream` trait; `DnsUpstream` = UDP with TCP fallback, anti-spoofing |
 | `wire` | DNS over TCP length-prefix framing |
 | `config` | TOML file (`DNS_RS_CONFIG`) with `DNS_RS_*` overrides; validation; builds the `Policy` |
-| `sources` | Loads the configured blocklists (`file://`; `https://` to come) |
+| `sources` | Loads blocklists (`file://`, `https://`) concurrently; timeout and size limit; failures skip the list |
 | `query_log` | One log line per query, target `dns_rs::query` |
 
 Design constraint for every feature: a replica must stay **stateless** (config
@@ -51,7 +51,7 @@ so that N replicas can run behind one service.
 
 0. Forwarder with cache — done
 1. Blocking: adlists, allow/deny (exact, suffix, regex), blocking modes — done
-   for local lists; remaining: HTTP lists, hot reload, periodic refresh
+   for local and HTTP lists; remaining: hot reload, periodic refresh
 2. Observability: query log, Prometheus metrics, REST API
 3. Groups/clients, local records, conditional forwarding, DoH/DoT upstream, DNSSEC
 4. Container image, control plane / data plane split, multi-replica

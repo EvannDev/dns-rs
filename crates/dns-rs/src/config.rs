@@ -95,6 +95,24 @@ pub enum ListSource {
     Http(String),
 }
 
+impl std::fmt::Display for ListSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "file://{}", path.display()),
+            Self::Http(url) => f.write_str(url),
+        }
+    }
+}
+
+impl ListSource {
+    /// Plain HTTP: a tampered list could inject `@@` exceptions and unblock
+    /// domains, so these sources deserve a warning.
+    #[must_use]
+    pub fn is_insecure(&self) -> bool {
+        matches!(self, Self::Http(url) if url.starts_with("http://"))
+    }
+}
+
 impl TryFrom<String> for ListSource {
     type Error = String;
 
@@ -437,6 +455,24 @@ mod tests {
         let error = invalid("[blocking]\nlists = ['file://lists/mine.txt']");
 
         assert!(error.contains("absolute"), "{error}");
+    }
+
+    #[test]
+    fn list_source_displays_as_configured() {
+        for text in ["file:///etc/dns-rs/mine.txt", "https://example.org/hosts"] {
+            let source = ListSource::try_from(text.to_owned()).unwrap();
+
+            assert_eq!(source.to_string(), text);
+        }
+    }
+
+    #[test]
+    fn only_plain_http_lists_are_insecure() {
+        let source = |text: &str| ListSource::try_from(text.to_owned()).unwrap();
+
+        assert!(source("http://example.org/hosts").is_insecure());
+        assert!(!source("https://example.org/hosts").is_insecure());
+        assert!(!source("file:///etc/dns-rs/mine.txt").is_insecure());
     }
 
     #[test]
