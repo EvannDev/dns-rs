@@ -4,15 +4,17 @@
 //! upstream client or the cache are reported as needing a restart.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::blocking::Policy;
+use crate::config::ListConfig;
 use crate::config::{BlockingConfig, Config, ConfigError};
 use crate::handler::Handler;
-use crate::sources::{ListLoader, ListStore};
+use crate::metrics::{Metrics, ReloadResult};
+use crate::sources::{ListLoader, ListResult, ListStore};
 use crate::upstream::Upstream;
 
 /// What a configuration reload did.
@@ -36,6 +38,7 @@ type Lookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 pub struct Reloader<U> {
     handler: Arc<Handler<U>>,
+    metrics: Arc<Metrics>,
     loader: ListLoader,
     lookup: Lookup,
     /// In force: restart-only settings keep their startup values.
@@ -52,16 +55,20 @@ impl<U: Upstream> Reloader<U> {
     /// `lookup` reads environment variables, as [`Config::load`] does.
     pub async fn start(
         handler: Arc<Handler<U>>,
+        metrics: Arc<Metrics>,
         loader: ListLoader,
         config: Config,
         lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
     ) -> Result<Self, ConfigError> {
         let mut store = ListStore::default();
-        store.update(loader.load_each(&config.blocking.lists).await);
+        let results = loader.load_each(&config.blocking.lists).await;
+        record_lists(&metrics, &results);
+        store.update(results);
         let policy = build_policy(&config.blocking, &store).await?;
-        handler.set_policy(policy);
+        install(&handler, &metrics, policy);
         Ok(Self {
             handler,
+            metrics,
             loader,
             lookup: Box::new(lookup),
             active: config.clone(),
@@ -84,6 +91,8 @@ impl<U: Upstream> Reloader<U> {
             Err(error) => return self.reject(error.to_string()),
         };
         self.last_rejection = None;
+        // Valid again, even if identical to the last configuration seen.
+        self.metrics.set_config_valid(true);
         if next == self.last_seen {
             return ConfigChange::Unchanged;
         }
@@ -105,18 +114,31 @@ impl<U: Upstream> Reloader<U> {
             store.retain(&next.blocking.lists);
             let missing = store.missing(&next.blocking.lists);
             if !missing.is_empty() {
-                store.update(self.loader.load_each(&missing).await);
+                let results = self.loader.load_each(&missing).await;
+                record_lists(&self.metrics, &results);
+                store.update(results);
             }
             match build_policy(&next.blocking, &store).await {
                 Ok(policy) => {
-                    self.handler.set_policy(policy);
+                    install(&self.handler, &self.metrics, policy);
                     self.store = store;
                 }
                 Err(error) => return self.reject(error.to_string()),
             }
+            for removed in &self.active.blocking.lists {
+                if !next
+                    .blocking
+                    .lists
+                    .iter()
+                    .any(|list| list.source == removed.source)
+                {
+                    self.metrics.forget_list(&removed.source);
+                }
+            }
             self.active.blocking = next.blocking.clone();
         }
         self.last_seen = next;
+        self.metrics.record_config_reload(ReloadResult::Applied);
         tracing::info!("configuration reloaded");
         ConfigChange::Applied { restart_required }
     }
@@ -125,9 +147,10 @@ impl<U: Upstream> Reloader<U> {
     /// last valid version.
     pub async fn refresh_lists(&mut self) {
         let results = self.loader.load_each(&self.active.blocking.lists).await;
+        record_lists(&self.metrics, &results);
         self.store.update(results);
         match build_policy(&self.active.blocking, &self.store).await {
-            Ok(policy) => self.handler.set_policy(policy),
+            Ok(policy) => install(&self.handler, &self.metrics, policy),
             Err(error) => {
                 tracing::error!(%error, "cannot rebuild the blocking policy, keeping the previous one");
             }
@@ -170,8 +193,10 @@ impl<U: Upstream> Reloader<U> {
     }
 
     fn reject(&mut self, reason: String) -> ConfigChange {
+        self.metrics.set_config_valid(false);
         if self.last_rejection.as_ref() != Some(&reason) {
             tracing::error!(error = %reason, "configuration rejected, keeping the previous one");
+            self.metrics.record_config_reload(ReloadResult::Rejected);
             self.last_rejection = Some(reason.clone());
         }
         ConfigChange::Rejected(reason)
@@ -180,6 +205,22 @@ impl<U: Upstream> Reloader<U> {
 
 /// Compiles the policy on a blocking thread: hundreds of thousands of rules
 /// take long enough to delay queries if built on a runtime worker.
+fn install<U: Upstream>(handler: &Handler<U>, metrics: &Metrics, policy: Policy) {
+    metrics.set_blocking_rules(policy.filter.deny_count());
+    handler.set_policy(policy);
+}
+
+fn record_lists(metrics: &Metrics, results: &[(ListConfig, ListResult)]) {
+    for (config, result) in results {
+        match result {
+            Ok(list) => {
+                metrics.record_list_loaded(&config.source, list.deny.len(), SystemTime::now());
+            }
+            Err(error) => metrics.record_list_failed(&config.source, error),
+        }
+    }
+}
+
 async fn build_policy(blocking: &BlockingConfig, store: &ListStore) -> Result<Policy, ConfigError> {
     let blocking = blocking.clone();
     let lists = store.snapshot();
@@ -223,12 +264,14 @@ mod tests {
     /// A temporary directory holding the config file and list files.
     struct Setup {
         dir: tempfile::TempDir,
+        metrics: Arc<Metrics>,
     }
 
     impl Setup {
         fn new() -> Self {
             Self {
                 dir: tempfile::tempdir().unwrap(),
+                metrics: Arc::new(Metrics::new()),
             }
         }
 
@@ -257,9 +300,15 @@ mod tests {
             };
             let config = Config::load(&lookup).unwrap();
             let loader = ListLoader::new(Limits::default()).unwrap();
-            let reloader = Reloader::start(Arc::clone(&handler), loader, config, lookup)
-                .await
-                .unwrap();
+            let reloader = Reloader::start(
+                Arc::clone(&handler),
+                Arc::clone(&self.metrics),
+                loader,
+                config,
+                lookup,
+            )
+            .await
+            .unwrap();
             (reloader, handler)
         }
     }
@@ -573,6 +622,149 @@ mod tests {
             setup.write("list.txt", "new.example.com\n");
 
             assert!(blocked_within(&handler, "new.example.com.", Duration::from_secs(70)).await);
+        }
+    }
+
+    mod metrics {
+        use super::*;
+
+        fn has(setup: &Setup, series: &str) -> bool {
+            setup.metrics.encode().lines().any(|line| line == series)
+        }
+
+        fn text(setup: &Setup) -> String {
+            setup.metrics.encode()
+        }
+
+        fn list_series(setup: &Setup, metric: &str) -> String {
+            format!(r#"{metric}{{list="{}"}}"#, setup.list_url("list.txt"))
+        }
+
+        #[tokio::test]
+        async fn start_exposes_rules_and_lists() {
+            let setup = Setup::new();
+            setup.write("list.txt", "a.example.com\nb.example.com\n");
+            setup.config(&format!(
+                "[blocking]\ndeny = ['c.example.com']\nlists = ['{}']",
+                setup.list_url("list.txt")
+            ));
+
+            let _reloader = setup.reloader().await;
+
+            assert!(has(&setup, "dns_rs_blocking_rules 3"), "{}", text(&setup));
+            let rules = format!("{} 2", list_series(&setup, "dns_rs_blocklist_rules"));
+            assert!(has(&setup, &rules), "{}", text(&setup));
+            let success = list_series(&setup, "dns_rs_blocklist_last_success_timestamp_seconds");
+            assert!(text(&setup).contains(&success), "{}", text(&setup));
+        }
+
+        #[tokio::test]
+        async fn failed_refresh_is_counted_and_keeps_the_rules_shown() {
+            let setup = Setup::new();
+            setup.write("list.txt", "a.example.com\n");
+            setup.config(&format!(
+                "[blocking]\nlists = ['{}']",
+                setup.list_url("list.txt")
+            ));
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            remove(&setup.path("list.txt"));
+            reloader.refresh_lists().await;
+
+            let failures = format!(
+                r#"dns_rs_blocklist_failures_total{{list="{}",reason="failed"}} 1"#,
+                setup.list_url("list.txt")
+            );
+            assert!(has(&setup, &failures), "{}", text(&setup));
+            let rules = format!("{} 1", list_series(&setup, "dns_rs_blocklist_rules"));
+            assert!(has(&setup, &rules), "{}", text(&setup));
+        }
+
+        #[tokio::test]
+        async fn removed_list_leaves_no_series() {
+            let setup = Setup::new();
+            setup.write("list.txt", "a.example.com\n");
+            setup.config(&format!(
+                "[blocking]\nlists = ['{}']",
+                setup.list_url("list.txt")
+            ));
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            setup.config("");
+            reloader.reload_config().await;
+
+            assert!(!text(&setup).contains("list.txt"), "{}", text(&setup));
+            assert!(has(&setup, "dns_rs_blocking_rules 0"), "{}", text(&setup));
+        }
+
+        #[tokio::test]
+        async fn applied_reload_is_counted_and_updates_rules() {
+            let setup = Setup::new();
+            setup.config("[blocking]\ndeny = ['a.example.com']");
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            setup.config("[blocking]\ndeny = ['a.example.com', 'b.example.com']");
+            reloader.reload_config().await;
+
+            assert!(
+                has(&setup, r#"dns_rs_config_reloads_total{result="applied"} 1"#),
+                "{}",
+                text(&setup)
+            );
+            assert!(has(&setup, "dns_rs_blocking_rules 2"), "{}", text(&setup));
+        }
+
+        // Polling a broken file every 10 s must not inflate the counter.
+        #[tokio::test]
+        async fn rejected_config_is_counted_once_and_marked_invalid() {
+            let setup = Setup::new();
+            setup.config("[blocking]\ndeny = ['a.example.com']");
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            setup.config("[blocking]\ndenny = []");
+            reloader.reload_config().await;
+            reloader.reload_config().await;
+
+            assert!(
+                has(
+                    &setup,
+                    r#"dns_rs_config_reloads_total{result="rejected"} 1"#
+                ),
+                "{}",
+                text(&setup)
+            );
+            assert!(has(&setup, "dns_rs_config_valid 0"), "{}", text(&setup));
+        }
+
+        #[tokio::test]
+        async fn fixed_config_is_marked_valid_again() {
+            let setup = Setup::new();
+            setup.config("[blocking]\ndeny = ['a.example.com']");
+            let (mut reloader, _handler) = setup.reloader().await;
+            setup.config("[blocking]\ndenny = []");
+            reloader.reload_config().await;
+
+            setup.config("[blocking]\ndeny = ['b.example.com']");
+            reloader.reload_config().await;
+
+            assert!(has(&setup, "dns_rs_config_valid 1"), "{}", text(&setup));
+        }
+
+        // Reverting to the last valid content is "unchanged", yet the file
+        // is valid again: the alert must clear.
+        #[tokio::test]
+        async fn reverted_config_is_marked_valid_again() {
+            let setup = Setup::new();
+            setup.config("[blocking]\ndeny = ['a.example.com']");
+            let (mut reloader, _handler) = setup.reloader().await;
+            setup.config("[blocking]\ndenny = []");
+            reloader.reload_config().await;
+
+            setup.config("[blocking]\ndeny = ['a.example.com']");
+            let change = reloader.reload_config().await;
+
+            assert_eq!(change, ConfigChange::Unchanged);
+            assert!(has(&setup, "dns_rs_config_valid 1"), "{}", text(&setup));
         }
     }
 }

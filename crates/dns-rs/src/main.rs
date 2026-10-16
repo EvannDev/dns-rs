@@ -23,14 +23,21 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     let upstream = DnsUpstream::new(config.upstream.server, config.upstream.timeout);
     let handler = Arc::new(Handler::new(upstream, DnsCache::new(config.cache.size)));
-    let metrics = Arc::new(Metrics::new());
+    let mut metrics = Metrics::new();
+    let cache_owner = Arc::clone(&handler);
+    metrics.register_cache_entries(move || cache_owner.cached_responses());
+    let metrics = Arc::new(metrics);
 
     // Fail fast: a TLS stack that cannot start means a broken environment,
     // even if no list is fetched over HTTPS today.
     let loader = ListLoader::new(Limits::default()).context("initializing TLS")?;
-    let reloader = Reloader::start(Arc::clone(&handler), loader, config.clone(), |var| {
-        std::env::var(var).ok()
-    })
+    let reloader = Reloader::start(
+        Arc::clone(&handler),
+        Arc::clone(&metrics),
+        loader,
+        config.clone(),
+        |var| std::env::var(var).ok(),
+    )
     .await?;
     // Kept until shutdown: the reload loop stops when every sender is gone.
     let (reload_now, reload_requests) = mpsc::channel(1);
