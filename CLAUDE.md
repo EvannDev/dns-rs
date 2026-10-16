@@ -28,6 +28,13 @@ container and, later, as multiple stateless replicas on Kubernetes.
   codes (SERVFAIL, FORMERR…) or are logged; the server never panics on input.
 - Code, comments and commit messages in English (Conventional Commits).
 
+## Documentation
+
+Owned by the docs agent (`.claude/agents/docs.md`), which runs on every PR
+and weekly. Decisions are recorded in `docs/adr/`; read them before changing
+a behaviour they cover, and supersede them with a new ADR rather than
+contradicting them.
+
 ## Architecture
 
 Single crate for now (`crates/dns-rs`), split into crates only when needed.
