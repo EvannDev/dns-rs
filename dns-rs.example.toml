@@ -57,7 +57,8 @@ deny = []
 # Same syntax; allow always wins over deny and blocklists.
 allow = []
 
-# Regexes, matched against the lowercase name without trailing dot.
+# Regexes, matched against the lowercase name without trailing dot. Each list
+# is compiled as one set: patterns that are too large together are rejected.
 # Example (default: none): deny_regex = ['^ad[0-9]+\.']
 deny_regex = []
 allow_regex = []

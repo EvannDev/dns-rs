@@ -19,3 +19,6 @@ All notable changes to dns-rs are documented here. The format is based on
 
 - Configuration parse errors are one line with their position, for example
   `line 4, column 1: unknown field ...` (#13).
+- `blocking.deny_regex` and `blocking.allow_regex` are also validated as a
+  whole: a list whose patterns compile alone but are too large together is
+  rejected at startup or on reload, naming the key (#13).
