@@ -1,6 +1,11 @@
 # dns-rs configuration. Point DNS_RS_CONFIG at this file.
 # Every section and key is optional; the values below are the defaults
 # unless stated otherwise.
+#
+# The file is read again every 10 s and on SIGHUP. [blocking] changes apply
+# at once; server.listen, upstream.* and cache.size need a restart (logged
+# once, not applied). An invalid file is rejected and the previous
+# configuration keeps working.
 
 [server]
 # UDP and TCP listen address. Override: DNS_RS_LISTEN
@@ -27,8 +32,8 @@ mode = "null"
 refresh = "24h"
 
 # Blocklists: hosts files, plain domain lists or Adblock `||domain^` rules,
-# from https:// URLs or file:///absolute/paths, loaded at startup (4 at a
-# time). A list that fails (error, timeout after 30 s, over 64 MiB) is
+# from https:// URLs or file:///absolute/paths, loaded at startup and again
+# every `refresh` (4 at a time). A list that fails (error, timeout after 30 s, over 64 MiB) is
 # skipped and logged; DNS keeps working. Prefer https:// over http://:
 # redirects from HTTPS down to HTTP are refused.
 #

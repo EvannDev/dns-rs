@@ -4,7 +4,8 @@ A network-wide DNS sinkhole written in Rust — a modern take on Pi-hole, built 
 run in a container and scale as stateless replicas.
 
 > Status: caching DNS forwarder with blocking (blocklists over HTTPS or from
-> files, allow/deny rules, regexes). Next: hot reload and periodic refresh.
+> files, allow/deny rules, regexes) that reloads its configuration and
+> refreshes blocklists while running. Next: observability (metrics, REST API).
 
 ## Run
 
@@ -25,6 +26,21 @@ A few can be overridden by environment variables, handy in containers:
 | `DNS_RS_UPSTREAM_TIMEOUT_MS` | `upstream.timeout` |
 | `DNS_RS_CACHE_SIZE` | `cache.size` |
 | `RUST_LOG` | Log filter, default `info`; `dns_rs::query=off` silences the query log |
+
+## Reload without restart
+
+dns-rs reads the configuration file every 10 seconds (by content, so a
+Kubernetes ConfigMap update counts as an edit) and immediately on `SIGHUP`.
+Changes to `[blocking]` apply at once. `server.listen`, `upstream.server`,
+`upstream.timeout` and `cache.size` need a restart: dns-rs logs
+"configuration changes need a restart to apply" once and keeps the running
+values. An invalid or missing file is rejected (logged once) and the previous
+configuration keeps working.
+
+Blocklists are downloaded again every `blocking.refresh` (default `24h`,
+minimum `1m`). A list that fails keeps its last valid version. On a
+configuration reload only new lists are downloaded; removed lists stop
+blocking.
 
 ## Develop
 
