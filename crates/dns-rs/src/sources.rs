@@ -144,13 +144,14 @@ impl ListLoader {
         if !status.is_success() {
             return Err(FetchError::Status(status.as_u16()));
         }
-        if response
-            .content_length()
-            .is_some_and(|len| len > self.limit_u64())
-        {
+        let announced = response.content_length();
+        if announced.is_some_and(|len| len > self.limit_u64()) {
             return Err(FetchError::TooLarge(self.limits.max_bytes));
         }
-        let mut bytes = Vec::new();
+        // Reserving the announced size avoids doubling the capacity past it.
+        let mut bytes = Vec::with_capacity(announced.map_or(0, |len| {
+            usize::try_from(len).unwrap_or(self.limits.max_bytes)
+        }));
         while let Some(chunk) = response.chunk().await.map_err(from_reqwest)? {
             self.check_size(bytes.len() + chunk.len())?;
             bytes.extend_from_slice(&chunk);
@@ -194,8 +195,15 @@ fn from_reqwest(error: reqwest::Error) -> FetchError {
     if error.is_timeout() {
         FetchError::Timeout
     } else {
-        // The alternate form includes the cause chain (DNS, TLS, redirect…).
-        FetchError::Failed(format!("{error:#}"))
+        // reqwest's message alone hides the cause (DNS, TLS, redirect…).
+        let mut message = error.to_string();
+        let mut source = std::error::Error::source(&error);
+        while let Some(cause) = source {
+            message.push_str(": ");
+            message.push_str(&cause.to_string());
+            source = cause.source();
+        }
+        FetchError::Failed(message)
     }
 }
 
@@ -260,6 +268,8 @@ mod tests {
         Silent,
         /// 302 to the given location.
         Redirect(String),
+        /// 302 to the same path, forever, counting requests.
+        RedirectLoop(Arc<AtomicUsize>),
         /// Answers once every party has connected: proves concurrency.
         AfterBarrier(Arc<Barrier>, String),
         /// Holds each connection briefly while measuring concurrency.
@@ -313,6 +323,10 @@ mod tests {
                         Reply::Redirect(location) => format!(
                             "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                         ),
+                        Reply::RedirectLoop(hits) => {
+                            hits.fetch_add(1, Ordering::SeqCst);
+                            "HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+                        }
                         Reply::AfterBarrier(barrier, body) => {
                             barrier.wait().await;
                             ok(&body)
@@ -408,7 +422,9 @@ mod tests {
         assert_eq!(error, FetchError::Status(404));
     }
 
-    #[tokio::test]
+    // Paused clock: tokio jumps straight to the timeout once only the silent
+    // server is left, so the test neither waits nor depends on CI speed.
+    #[tokio::test(start_paused = true)]
     async fn silent_server_times_out() {
         let addr = http_server(Reply::Silent).await;
 
@@ -483,6 +499,22 @@ mod tests {
         let text = loader().fetch(&http(origin, "/old")).await.unwrap();
 
         assert_eq!(text, "ads.example.com");
+    }
+
+    // Proves the policy is wired into the client: reqwest's default would
+    // follow 10 redirects (11 requests) and fail with another message.
+    #[tokio::test]
+    async fn redirect_loop_is_cut_by_our_policy() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let addr = http_server(Reply::RedirectLoop(Arc::clone(&hits))).await;
+
+        let error = loader().fetch(&http(addr, "/loop")).await.unwrap_err();
+
+        assert!(
+            matches!(&error, FetchError::Failed(message) if message.contains("redirect refused")),
+            "{error:?}"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), MAX_REDIRECTS);
     }
 
     #[test]

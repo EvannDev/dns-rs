@@ -20,6 +20,8 @@ async fn main() -> anyhow::Result<()> {
     let upstream = DnsUpstream::new(config.upstream.server, config.upstream.timeout);
     let handler = Arc::new(Handler::new(upstream, DnsCache::new(config.cache.size)));
 
+    // Fail fast: a TLS stack that cannot start means a broken environment,
+    // even if no list is fetched over HTTPS today.
     let loader = ListLoader::new(Limits::default()).context("initializing TLS")?;
     let lists = loader.load(&config.blocking.lists).await;
     let policy = config.blocking.policy(&lists)?;
