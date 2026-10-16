@@ -200,7 +200,7 @@ pub type ListResult = Result<ParsedList, FetchError>;
 /// on refresh keeps blocking with its previous content (ADR 0007).
 #[derive(Debug, Default)]
 pub struct ListStore {
-    lists: HashMap<ListConfig, ParsedList>,
+    lists: HashMap<ListConfig, Arc<ParsedList>>,
 }
 
 impl ListStore {
@@ -210,7 +210,7 @@ impl ListStore {
         for (config, result) in results {
             match result {
                 Ok(list) => {
-                    self.lists.insert(config, list);
+                    self.lists.insert(config, Arc::new(list));
                 }
                 Err(_) if self.lists.contains_key(&config) => {
                     tracing::warn!(list = %config.source, "keeping the previous version of the blocklist");
@@ -237,7 +237,14 @@ impl ListStore {
 
     /// Every stored list, in no particular order.
     pub fn lists(&self) -> impl Iterator<Item = &ParsedList> {
-        self.lists.values()
+        self.lists.values().map(AsRef::as_ref)
+    }
+
+    /// Shared handles to every stored list, to build a policy elsewhere
+    /// (on a blocking thread) without copying the rules.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<Arc<ParsedList>> {
+        self.lists.values().cloned().collect()
     }
 }
 

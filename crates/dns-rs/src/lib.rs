@@ -7,6 +7,7 @@ pub mod filter;
 pub mod handler;
 pub mod lists;
 pub mod query_log;
+pub mod reload;
 pub mod server;
 pub mod sources;
 pub mod upstream;
