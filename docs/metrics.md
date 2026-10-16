@@ -48,8 +48,9 @@ Label values:
   When something was removed, the label ends with `#` and an 8-digit
   hexadecimal fingerprint of the full URL (for example
   `https://lists.example/hosts#1a2b3c4d`), so lists that differ only by
-  their query string keep separate series. The fingerprint is 32 bits and
-  does not reveal the removed part.
+  their query string keep separate series. The fingerprint is the low 32
+  bits of FNV-1a 64 of the full URL, so it is the same on every replica and
+  build, and it does not reveal the removed part.
   Series of a list removed from the configuration are dropped on reload.
 - `reason` (blocklist failures): `timeout`, `too_large`, `status` or
   `failed`.
