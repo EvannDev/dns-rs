@@ -61,6 +61,12 @@ impl<U: Upstream> Handler<U> {
         }
     }
 
+    /// Responses held in the cache, for metrics.
+    #[must_use]
+    pub fn cached_responses(&self) -> usize {
+        self.cache.len()
+    }
+
     /// Replaces the blocking policy; takes effect for the next query.
     pub fn set_policy(&self, policy: Policy) {
         self.policy.store(Arc::new(policy));
@@ -270,6 +276,17 @@ mod tests {
         let resolution = handler.handle(&request(7, "example.com.")).await;
 
         assert_eq!(resolution.source, Source::Upstream);
+    }
+
+    #[tokio::test]
+    async fn cached_responses_are_reported() {
+        let handler = handler(FakeUpstream::default());
+
+        handler.handle(&request(1, "a.example.")).await;
+        handler.handle(&request(2, "b.example.")).await;
+        handler.handle(&request(3, "a.example.")).await;
+
+        assert_eq!(handler.cached_responses(), 2);
     }
 
     #[tokio::test]

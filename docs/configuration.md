@@ -51,7 +51,8 @@ Beyond syntax, these are rejected:
 - A `deny` or `allow` entry that is not a domain or `*.domain`.
 - A regex that does not compile, or a regex list whose patterns are too
   large together (each list is compiled as one set). The error names the key.
-- A list source that is not `file:///absolute/path`, `https://` or `http://`.
+- A list source that is not `file:///absolute/path`, `https://` or `http://`, or an
+  `http(s)://` URL that does not parse (for example `https://exa mple.org`).
 
 ## Reload without restart
 
