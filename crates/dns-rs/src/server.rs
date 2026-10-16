@@ -5,11 +5,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
+use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::timeout;
 
 use crate::handler::Handler;
+use crate::metrics::Metrics;
 use crate::query_log;
 use crate::upstream::Upstream;
 use crate::wire::{read_tcp_message, write_tcp_message};
@@ -23,7 +24,11 @@ const HEADER_LEN: usize = 12;
 const MIN_UDP_PAYLOAD: u16 = 512;
 
 /// Serves DNS over UDP until the socket fails.
-pub async fn serve_udp<U: Upstream>(socket: UdpSocket, handler: Arc<Handler<U>>) -> io::Result<()> {
+pub async fn serve_udp<U: Upstream>(
+    socket: UdpSocket,
+    handler: Arc<Handler<U>>,
+    metrics: Arc<Metrics>,
+) -> io::Result<()> {
     let socket = Arc::new(socket);
     let mut buf = vec![0; usize::from(u16::MAX)];
     loop {
@@ -31,8 +36,10 @@ pub async fn serve_udp<U: Upstream>(socket: UdpSocket, handler: Arc<Handler<U>>)
         let datagram = buf[..len].to_vec();
         let socket = Arc::clone(&socket);
         let handler = Arc::clone(&handler);
+        let metrics = Arc::clone(&metrics);
         tokio::spawn(async move {
-            let Some((response, max_payload)) = respond(&handler, &datagram, peer).await else {
+            let Some((response, max_payload)) = respond(&handler, &metrics, &datagram, peer).await
+            else {
                 return;
             };
             let bytes = udp_response_bytes(&response, max_payload);
@@ -47,12 +54,14 @@ pub async fn serve_udp<U: Upstream>(socket: UdpSocket, handler: Arc<Handler<U>>)
 pub async fn serve_tcp<U: Upstream>(
     listener: TcpListener,
     handler: Arc<Handler<U>>,
+    metrics: Arc<Metrics>,
 ) -> io::Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
         let handler = Arc::clone(&handler);
+        let metrics = Arc::clone(&metrics);
         tokio::spawn(async move {
-            if let Err(error) = serve_tcp_connection(stream, peer, &handler).await {
+            if let Err(error) = serve_tcp_connection(stream, peer, &handler, &metrics).await {
                 tracing::debug!(%peer, %error, "TCP connection closed");
             }
         });
@@ -64,6 +73,7 @@ async fn serve_tcp_connection<U: Upstream>(
     mut stream: TcpStream,
     peer: SocketAddr,
     handler: &Handler<U>,
+    metrics: &Metrics,
 ) -> io::Result<()> {
     loop {
         let Ok(message) = timeout(TCP_IDLE_TIMEOUT, read_tcp_message(&mut stream)).await else {
@@ -74,7 +84,7 @@ async fn serve_tcp_connection<U: Upstream>(
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) => return Err(error),
         };
-        if let Some((response, _)) = respond(handler, &message, peer).await {
+        if let Some((response, _)) = respond(handler, metrics, &message, peer).await {
             write_tcp_message(&mut stream, &encode(&response)).await?;
         }
     }
@@ -84,6 +94,7 @@ async fn serve_tcp_connection<U: Upstream>(
 /// largest UDP payload the client accepts.
 async fn respond<U: Upstream>(
     handler: &Handler<U>,
+    metrics: &Metrics,
     bytes: &[u8],
     peer: SocketAddr,
 ) -> Option<(Message, u16)> {
@@ -95,12 +106,19 @@ async fn respond<U: Upstream>(
         Ok(request) => {
             let started = Instant::now();
             let resolution = handler.handle(&request).await;
+            let elapsed = started.elapsed();
             query_log::record(
                 peer.ip(),
                 &request,
                 &resolution.response,
                 resolution.source,
-                started.elapsed(),
+                elapsed,
+            );
+            metrics.record_query(
+                resolution.source,
+                resolution.response.metadata.response_code,
+                request.queries.first().map(Query::query_type),
+                elapsed,
             );
             Some((resolution.response, request.max_payload()))
         }

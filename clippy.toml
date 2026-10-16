@@ -1,0 +1,3 @@
+# Proper nouns that doc comments may write without backticks ("..": keep
+# clippy's default list).
+doc-valid-idents = ["OpenMetrics", ".."]

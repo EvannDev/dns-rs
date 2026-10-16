@@ -4,6 +4,8 @@ use anyhow::Context;
 use dns_rs::cache::DnsCache;
 use dns_rs::config::Config;
 use dns_rs::handler::Handler;
+use dns_rs::http::{HttpState, serve_http};
+use dns_rs::metrics::Metrics;
 use dns_rs::reload::{CONFIG_POLL_INTERVAL, Reloader};
 use dns_rs::server::{serve_tcp, serve_udp};
 use dns_rs::sources::{Limits, ListLoader};
@@ -21,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     let upstream = DnsUpstream::new(config.upstream.server, config.upstream.timeout);
     let handler = Arc::new(Handler::new(upstream, DnsCache::new(config.cache.size)));
+    let metrics = Arc::new(Metrics::new());
 
     // Fail fast: a TLS stack that cannot start means a broken environment,
     // even if no list is fetched over HTTPS today.
@@ -42,11 +45,18 @@ async fn main() -> anyhow::Result<()> {
     let tcp = TcpListener::bind(listen)
         .await
         .with_context(|| format!("binding TCP {listen}"))?;
-    tracing::info!(%listen, upstream = %config.upstream.server, "dns-rs started");
+    let http_listen = config.http.listen;
+    let http = TcpListener::bind(http_listen)
+        .await
+        .with_context(|| format!("binding HTTP {http_listen}"))?;
+    let http_state = HttpState::new(Arc::clone(&metrics));
+    http_state.set_ready();
+    tracing::info!(%listen, %http_listen, upstream = %config.upstream.server, "dns-rs started");
 
     tokio::select! {
-        result = serve_udp(udp, Arc::clone(&handler)) => result.context("UDP server")?,
-        result = serve_tcp(tcp, handler) => result.context("TCP server")?,
+        result = serve_udp(udp, Arc::clone(&handler), Arc::clone(&metrics)) => result.context("UDP server")?,
+        result = serve_tcp(tcp, handler, metrics) => result.context("TCP server")?,
+        result = serve_http(http, http_state) => result.context("HTTP server")?,
         () = shutdown_signal() => tracing::info!("shutting down"),
     }
     drop(reload_now);
