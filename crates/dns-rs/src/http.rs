@@ -4,8 +4,9 @@ use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -13,6 +14,7 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 
 use crate::blocking::BlockingMode;
+use crate::config::ApiToken;
 use crate::filter::{Match, Verdict};
 use crate::handler::PolicyView;
 use crate::metrics::Metrics;
@@ -22,15 +24,23 @@ use crate::metrics::Metrics;
 pub struct HttpState {
     metrics: Arc<Metrics>,
     policy: Arc<dyn PolicyView>,
+    api_token: Option<ApiToken>,
     ready: Arc<AtomicBool>,
 }
 
 impl HttpState {
     #[must_use]
-    pub fn new(metrics: Arc<Metrics>, policy: Arc<dyn PolicyView>) -> Self {
+    /// `api_token`: the token `/api/*` requests must present; without one,
+    /// the API is disabled.
+    pub fn new(
+        metrics: Arc<Metrics>,
+        policy: Arc<dyn PolicyView>,
+        api_token: Option<ApiToken>,
+    ) -> Self {
         Self {
             metrics,
             policy,
+            api_token,
             ready: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -43,11 +53,16 @@ impl HttpState {
 
 /// Serves `/healthz`, `/readyz` and `/metrics` until the listener fails.
 pub async fn serve_http(listener: TcpListener, state: HttpState) -> io::Result<()> {
+    // Probes and metrics stay open for the kubelet and Prometheus; the API,
+    // which reveals the blocking policy, needs the token.
+    let api = Router::new()
+        .route("/api/v1/check/{domain}", get(check))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readiness))
         .route("/metrics", get(metrics))
-        .route("/api/v1/check/{domain}", get(check))
+        .merge(api)
         .with_state(state);
     axum::serve(listener, router).await
 }
@@ -96,6 +111,38 @@ fn is_query_name(name: &str) -> bool {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         })
+}
+
+/// Lets a request through only if it carries `Authorization: Bearer <token>`
+/// with the configured token; without a configured token, the API is off.
+async fn require_token(State(state): State<HttpState>, request: Request, next: Next) -> Response {
+    let Some(token) = &state.api_token else {
+        let error = "the API is disabled: set DNS_RS_API_TOKEN or http.api_token_file".to_owned();
+        return (StatusCode::FORBIDDEN, Json(ErrorResponse { error })).into_response();
+    };
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(bearer_token);
+    match presented {
+        Some(presented) if token.matches(presented) => next.run(request).await,
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+            Json(ErrorResponse {
+                error: "missing or invalid API token".to_owned(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// The token of a `Bearer` authorization; the scheme is case-insensitive
+/// (RFC 9110 section 11.1).
+fn bearer_token(authorization: &str) -> Option<&str> {
+    let (scheme, token) = authorization.split_once(' ')?;
+    scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
 }
 
 async fn readiness(State(state): State<HttpState>) -> (StatusCode, &'static str) {

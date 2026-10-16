@@ -50,13 +50,46 @@ impl Default for ServerConfig {
 #[serde(deny_unknown_fields, default)]
 pub struct HttpConfig {
     pub listen: SocketAddr,
+    /// File holding the API token (a mounted Kubernetes Secret, say).
+    /// `DNS_RS_API_TOKEN` wins over it. The token itself never goes in this
+    /// file, which often ends up in a widely readable ConfigMap.
+    pub api_token_file: Option<PathBuf>,
 }
 
 impl Default for HttpConfig {
     fn default() -> Self {
         Self {
             listen: SocketAddr::from(([0, 0, 0, 0], 8080)),
+            api_token_file: None,
         }
+    }
+}
+
+/// Shortest accepted API token.
+const MIN_API_TOKEN_LEN: usize = 16;
+
+/// The secret that `/api/*` requests must present. Never printed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ApiToken(String);
+
+impl std::fmt::Debug for ApiToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ApiToken(<redacted>)")
+    }
+}
+
+impl ApiToken {
+    /// Compares in constant time for a given length, so the response time
+    /// does not tell how much of a guess was right.
+    #[must_use]
+    pub fn matches(&self, candidate: &str) -> bool {
+        let (expected, candidate) = (self.0.as_bytes(), candidate.as_bytes());
+        expected.len() == candidate.len()
+            && expected
+                .iter()
+                .zip(candidate)
+                .fold(0, |difference, (a, b)| difference | (a ^ b))
+                == 0
     }
 }
 
@@ -322,6 +355,10 @@ impl Config {
             ("server.listen", self.server.listen != next.server.listen),
             ("http.listen", self.http.listen != next.http.listen),
             (
+                "http.api_token_file",
+                self.http.api_token_file != next.http.api_token_file,
+            ),
+            (
                 "upstream.server",
                 self.upstream.server != next.upstream.server,
             ),
@@ -334,6 +371,36 @@ impl Config {
         .into_iter()
         .filter_map(|(setting, changed)| changed.then_some(setting))
         .collect()
+    }
+
+    /// The API token: `DNS_RS_API_TOKEN`, else the content of
+    /// `http.api_token_file`, else none (the API is then disabled).
+    pub fn api_token(
+        &self,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<Option<ApiToken>, ConfigError> {
+        let (token, source) = if let Some(token) = lookup("DNS_RS_API_TOKEN") {
+            (token, "DNS_RS_API_TOKEN".to_owned())
+        } else if let Some(path) = &self.http.api_token_file {
+            let token = std::fs::read_to_string(path).map_err(|error| {
+                invalid(
+                    "http.api_token_file",
+                    format!("cannot read {}: {error}", path.display()),
+                )
+            })?;
+            (token, format!("http.api_token_file ({})", path.display()))
+        } else {
+            return Ok(None);
+        };
+        let token = token.trim();
+        if token.chars().count() < MIN_API_TOKEN_LEN {
+            // Never echo the token itself.
+            return Err(invalid(
+                &source,
+                format!("the API token must be at least {MIN_API_TOKEN_LEN} characters"),
+            ));
+        }
+        Ok(Some(ApiToken(token.to_owned())))
     }
 
     /// Parses and validates a TOML document.
@@ -795,6 +862,122 @@ mod tests {
 
         assert_eq!(from_file.http.listen, "127.0.0.1:9100".parse().unwrap());
         assert_eq!(from_env.http.listen, "127.0.0.1:9200".parse().unwrap());
+    }
+
+    mod api_token {
+        use super::*;
+
+        const TOKEN: &str = "0123456789abcdef-token";
+
+        #[test]
+        fn no_token_means_no_api() {
+            assert_eq!(Config::default().api_token(env(&[])).unwrap(), None);
+        }
+
+        #[test]
+        fn token_comes_from_the_environment() {
+            let token = Config::default()
+                .api_token(env(&[("DNS_RS_API_TOKEN", TOKEN)]))
+                .unwrap();
+
+            assert!(token.unwrap().matches(TOKEN));
+        }
+
+        // A mounted Secret usually ends with a newline.
+        #[test]
+        fn token_comes_from_a_file_without_surrounding_whitespace() {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            writeln!(file, "  {TOKEN}  ").unwrap();
+            let config = Config::from_toml(&format!(
+                "[http]\napi_token_file = '{}'",
+                file.path().display()
+            ))
+            .unwrap();
+
+            let token = config.api_token(env(&[])).unwrap().unwrap();
+
+            assert!(token.matches(TOKEN));
+        }
+
+        #[test]
+        fn environment_wins_over_the_file() {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            writeln!(file, "file-token-0123456789").unwrap();
+            let config = Config::from_toml(&format!(
+                "[http]\napi_token_file = '{}'",
+                file.path().display()
+            ))
+            .unwrap();
+
+            let token = config
+                .api_token(env(&[("DNS_RS_API_TOKEN", TOKEN)]))
+                .unwrap()
+                .unwrap();
+
+            assert!(token.matches(TOKEN));
+            assert!(!token.matches("file-token-0123456789"));
+        }
+
+        #[test]
+        fn missing_token_file_is_an_error_naming_it() {
+            let config =
+                Config::from_toml("[http]\napi_token_file = '/nonexistent/api-token'").unwrap();
+
+            let error = config.api_token(env(&[])).unwrap_err().to_string();
+
+            assert!(error.contains("/nonexistent/api-token"), "{error}");
+        }
+
+        #[test]
+        fn short_token_is_rejected() {
+            let error = Config::default()
+                .api_token(env(&[("DNS_RS_API_TOKEN", "short")]))
+                .unwrap_err()
+                .to_string();
+
+            assert!(error.contains("16"), "{error}");
+            assert!(
+                !error.contains("short\""),
+                "the token must not be echoed: {error}"
+            );
+        }
+
+        #[test]
+        fn token_is_never_printed() {
+            let token = Config::default()
+                .api_token(env(&[("DNS_RS_API_TOKEN", TOKEN)]))
+                .unwrap();
+
+            assert!(!format!("{token:?}").contains(TOKEN));
+        }
+
+        #[test]
+        fn token_matches_only_itself() {
+            let token = Config::default()
+                .api_token(env(&[("DNS_RS_API_TOKEN", TOKEN)]))
+                .unwrap()
+                .unwrap();
+
+            assert!(token.matches(TOKEN));
+            for wrong in [
+                "",
+                "0123456789abcdef-tokeN",
+                "0123456789abcdef-token-",
+                "0123456789abcdef-toke",
+            ] {
+                assert!(!token.matches(wrong), "{wrong:?}");
+            }
+        }
+
+        #[test]
+        fn token_file_change_needs_a_restart() {
+            let next = Config::from_toml("[http]\napi_token_file = '/run/secrets/token'").unwrap();
+
+            assert_eq!(
+                Config::default().restart_required(&next),
+                ["http.api_token_file"]
+            );
+        }
     }
 
     #[test]

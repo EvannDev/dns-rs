@@ -21,6 +21,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env()?;
+    // Before loading lists: a bad token must fail startup at once.
+    let api_token = config.api_token(|var| std::env::var(var).ok())?;
+    if api_token.is_none() {
+        tracing::info!("API disabled: set DNS_RS_API_TOKEN or http.api_token_file to enable it");
+    }
     let upstream = DnsUpstream::new(config.upstream.server, config.upstream.timeout);
     let handler = Arc::new(Handler::new(upstream, DnsCache::new(config.cache.size)));
     let mut metrics = Metrics::new();
@@ -56,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     let http = TcpListener::bind(http_listen)
         .await
         .with_context(|| format!("binding HTTP {http_listen}"))?;
-    let http_state = HttpState::new(Arc::clone(&metrics), handler.clone());
+    let http_state = HttpState::new(Arc::clone(&metrics), handler.clone(), api_token);
     // Ready means: DNS sockets bound and first policy installed (by
     // Reloader::start above). Queries arriving before the servers are first
     // polled wait in the kernel's socket queues; none is lost.
