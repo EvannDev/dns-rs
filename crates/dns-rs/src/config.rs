@@ -87,7 +87,7 @@ pub struct BlockingConfig {
 
 /// A blocklist subscription: a URL, or `{ url = "…", wildcard = true }` when
 /// the list's bare domains also cover their subdomains.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ListConfig {
     pub source: ListSource,
     pub bare_domains: BareDomains,
@@ -152,7 +152,7 @@ impl<'de> Deserialize<'de> for ListConfig {
 }
 
 /// Where a blocklist is fetched from.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(try_from = "String")]
 pub enum ListSource {
     /// `file:///absolute/path`
@@ -301,7 +301,10 @@ impl Config {
 
 impl BlockingConfig {
     /// The policy combining these rules with the rules of loaded `lists`.
-    pub fn policy(&self, lists: &[ParsedList]) -> Result<Policy, ConfigError> {
+    pub fn policy<'a>(
+        &self,
+        lists: impl IntoIterator<Item = &'a ParsedList>,
+    ) -> Result<Policy, ConfigError> {
         let mut builder = FilterBuilder::new();
         for list in lists {
             for rule in &list.deny {
