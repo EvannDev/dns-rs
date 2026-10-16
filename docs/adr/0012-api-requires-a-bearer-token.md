@@ -1,7 +1,7 @@
 # 0012. The API requires a bearer token
 
 - Status: Accepted
-- Date: 2026-10-17
+- Date: 2026-10-16
 
 ## Context
 

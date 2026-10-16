@@ -24,6 +24,7 @@ A few can be overridden by environment variables, handy in containers:
 | `DNS_RS_CONFIG` | Path of the TOML file (defaults apply without it) |
 | `DNS_RS_LISTEN` | `server.listen` |
 | `DNS_RS_HTTP_LISTEN` | `http.listen` |
+| `DNS_RS_API_TOKEN` | API token (not a TOML key; without a token the API is disabled) |
 | `DNS_RS_UPSTREAM` | `upstream.server` |
 | `DNS_RS_UPSTREAM_TIMEOUT_MS` | `upstream.timeout` |
 | `DNS_RS_CACHE_SIZE` | `cache.size` |
