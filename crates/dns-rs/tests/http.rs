@@ -89,3 +89,20 @@ async fn answered_queries_show_up_in_metrics() {
         "{text}"
     );
 }
+
+// Undecodable queries (scans, attacks) are exactly what operators want to see.
+#[tokio::test]
+async fn malformed_queries_show_up_in_metrics() {
+    let server = start_server().await;
+    let (addr, _state) = start_http(Arc::clone(&server.metrics)).await;
+    // A valid header announcing one question, but no question follows.
+    let header = [0x00, 0x2A, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+
+    udp_exchange(server.udp, &header).await;
+
+    let text = get(addr, "/metrics").await.text().await.unwrap();
+    assert!(
+        text.contains(r#"dns_rs_queries_total{source="rejected",rcode="FORMERR",type="none"} 1"#),
+        "{text}"
+    );
+}

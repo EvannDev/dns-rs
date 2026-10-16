@@ -9,7 +9,7 @@ use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::timeout;
 
-use crate::handler::Handler;
+use crate::handler::{Handler, Source};
 use crate::metrics::Metrics;
 use crate::query_log;
 use crate::upstream::Upstream;
@@ -124,7 +124,14 @@ async fn respond<U: Upstream>(
         }
         Err(error) => {
             tracing::debug!(%peer, %error, "malformed query");
-            formerr_from_header(bytes).map(|response| (response, MIN_UDP_PAYLOAD))
+            let response = formerr_from_header(bytes)?;
+            metrics.record_query(
+                Source::Rejected,
+                ResponseCode::FormErr,
+                None,
+                Duration::ZERO,
+            );
+            Some((response, MIN_UDP_PAYLOAD))
         }
     }
 }
