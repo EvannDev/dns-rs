@@ -15,6 +15,9 @@ container and, later, as multiple stateless replicas on Kubernetes.
   system does (`repeated_query_is_served_from_cache`), cite the RFC when a test
   encodes protocol rules.
 - **No network in tests** except loopback sockets owned by the test itself.
+- **Assert the reason, not just the failure**: when several causes lead to
+  the same outcome (a skipped list), test the typed error, or the test may
+  pass for the wrong reason.
 - **Time is injected** (e.g. `now: Instant` parameters) so TTL logic is
   deterministic; no `sleep` in unit tests.
 - The CI gate is: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
@@ -40,7 +43,7 @@ Single crate for now (`crates/dns-rs`), split into crates only when needed.
 | `upstream` | `Upstream` trait; `DnsUpstream` = UDP with TCP fallback, anti-spoofing |
 | `wire` | DNS over TCP length-prefix framing |
 | `config` | TOML file (`DNS_RS_CONFIG`) with `DNS_RS_*` overrides; validation; builds the `Policy` |
-| `sources` | Loads blocklists (`file://`, `https://`) concurrently; timeout and size limit; failures skip the list |
+| `sources` | Loads blocklists (`file://`, `https://`) with bounded concurrency, timeout, size limit and no HTTPS→HTTP redirect; failures skip the list |
 | `query_log` | One log line per query, target `dns_rs::query` |
 
 Design constraint for every feature: a replica must stay **stateless** (config

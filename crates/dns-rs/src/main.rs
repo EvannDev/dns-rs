@@ -5,7 +5,7 @@ use dns_rs::cache::DnsCache;
 use dns_rs::config::Config;
 use dns_rs::handler::Handler;
 use dns_rs::server::{serve_tcp, serve_udp};
-use dns_rs::sources::load_lists;
+use dns_rs::sources::{Limits, ListLoader};
 use dns_rs::upstream::DnsUpstream;
 use tokio::net::{TcpListener, UdpSocket};
 use tracing_subscriber::EnvFilter;
@@ -20,7 +20,8 @@ async fn main() -> anyhow::Result<()> {
     let upstream = DnsUpstream::new(config.upstream.server, config.upstream.timeout);
     let handler = Arc::new(Handler::new(upstream, DnsCache::new(config.cache.size)));
 
-    let lists = load_lists(&config.blocking.lists).await;
+    let loader = ListLoader::new(Limits::default()).context("initializing TLS")?;
+    let lists = loader.load(&config.blocking.lists).await;
     let policy = config.blocking.policy(&lists)?;
     tracing::info!(
         rules = policy.filter.deny_count(),

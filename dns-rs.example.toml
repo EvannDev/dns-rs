@@ -23,9 +23,10 @@ size = 10000
 mode = "null"
 
 # Blocklists: hosts files, plain domain lists or Adblock `||domain^` rules,
-# from https:// URLs or file:///absolute/paths, downloaded concurrently at
-# startup. A list that fails (error, timeout after 30 s, over 64 MiB) is
-# skipped and logged; DNS keeps working. Prefer https:// over http://.
+# from https:// URLs or file:///absolute/paths, loaded at startup (4 at a
+# time). A list that fails (error, timeout after 30 s, over 64 MiB) is
+# skipped and logged; DNS keeps working. Prefer https:// over http://:
+# redirects from HTTPS down to HTTP are refused.
 # Example (default: none):
 # lists = [
 #   "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
