@@ -95,16 +95,23 @@ impl<U: Upstream> Reloader<U> {
         if next.blocking != self.active.blocking {
             // Lists already loaded are kept as they are: only new ones are
             // downloaded now; all are downloaded again at the next refresh.
-            let mut store = std::mem::take(&mut self.store);
+            // Work on a copy (cheap: lists are shared): if the new policy
+            // cannot be built, the lists of the configuration still in force
+            // must keep their last valid versions. Validation already rejects
+            // every known cause (including regex sets too large together),
+            // so this guards against unknown ones, such as a panic in the
+            // build thread; no test can reach it through a configuration.
+            let mut store = self.store.clone();
             store.retain(&next.blocking.lists);
             let missing = store.missing(&next.blocking.lists);
             if !missing.is_empty() {
                 store.update(self.loader.load_each(&missing).await);
             }
-            let policy = build_policy(&next.blocking, &store).await;
-            self.store = store;
-            match policy {
-                Ok(policy) => self.handler.set_policy(policy),
+            match build_policy(&next.blocking, &store).await {
+                Ok(policy) => {
+                    self.handler.set_policy(policy);
+                    self.store = store;
+                }
                 Err(error) => return self.reject(error.to_string()),
             }
             self.active.blocking = next.blocking.clone();
@@ -130,6 +137,9 @@ impl<U: Upstream> Reloader<U> {
     /// Runs until `reload_now` is closed: reads the configuration every
     /// `poll` and on each `reload_now` message (SIGHUP in production), and
     /// downloads the lists again every `blocking.refresh`.
+    ///
+    /// One thing at a time: a reload requested during a long refresh (slow
+    /// list servers, up to their timeout) is handled when the refresh ends.
     pub async fn run(mut self, poll: Duration, mut reload_now: mpsc::Receiver<()>) {
         let mut poll_timer = tokio::time::interval(poll);
         poll_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -361,6 +371,31 @@ mod tests {
             reloader.config().server.listen,
             "127.0.0.1:5300".parse().unwrap()
         );
+    }
+
+    // Each regex compiles alone, but not both in one set: the new policy
+    // cannot be built. The lists of the configuration still in force must
+    // survive that rejected reload.
+    #[tokio::test]
+    async fn rejected_reload_keeps_the_lists_in_force() {
+        let setup = Setup::new();
+        setup.write("list.txt", "listed.example.com\n");
+        setup.config(&format!(
+            "[blocking]\nlists = ['{}']",
+            setup.list_url("list.txt")
+        ));
+        let (mut reloader, handler) = setup.reloader().await;
+
+        setup.config("[blocking]\ndeny_regex = ['\\w{200}a', '\\w{200}b']");
+        let change = reloader.reload_config().await;
+        remove(&setup.path("list.txt"));
+        reloader.refresh_lists().await;
+
+        assert!(
+            matches!(&change, ConfigChange::Rejected(reason) if reason.contains("regex")),
+            "{change:?}"
+        );
+        assert!(blocked(&handler, "listed.example.com.").await);
     }
 
     #[tokio::test]

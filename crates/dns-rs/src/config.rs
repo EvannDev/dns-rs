@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use regex::Regex;
+use regex::{Regex, RegexSet};
 use serde::Deserialize;
 
 use crate::blocking::{BlockingMode, Policy};
@@ -339,6 +339,9 @@ impl Config {
                 Regex::new(pattern)
                     .map_err(|error| invalid(field, format!("{pattern:?}: {error}")))?;
             }
+            // The policy compiles them as one set, with its own size limit.
+            RegexSet::new(patterns)
+                .map_err(|error| invalid(field, format!("too large together: {error}")))?;
         }
         Ok(())
     }
@@ -572,6 +575,15 @@ mod tests {
 
         assert!(error.contains("deny_regex"), "{error}");
         assert!(error.contains('('), "{error}");
+    }
+
+    // The policy compiles each list of regexes as one set, which has its own
+    // size limit: validation must catch what would fail there.
+    #[test]
+    fn regexes_too_large_together_are_rejected() {
+        let error = invalid("[blocking]\ndeny_regex = ['\\w{200}a', '\\w{200}b']");
+
+        assert!(error.contains("blocking.deny_regex"), "{error}");
     }
 
     #[test]

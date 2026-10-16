@@ -198,7 +198,7 @@ pub type ListResult = Result<ParsedList, FetchError>;
 
 /// The last valid version of each configured list, so that a list failing
 /// on refresh keeps blocking with its previous content (ADR 0007).
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ListStore {
     lists: HashMap<ListConfig, Arc<ParsedList>>,
 }
