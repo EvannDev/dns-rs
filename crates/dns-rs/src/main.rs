@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     let http = TcpListener::bind(http_listen)
         .await
         .with_context(|| format!("binding HTTP {http_listen}"))?;
-    let http_state = HttpState::new(Arc::clone(&metrics));
+    let http_state = HttpState::new(Arc::clone(&metrics), handler.clone());
     // Ready means: DNS sockets bound and first policy installed (by
     // Reloader::start above). Queries arriving before the servers are first
     // polled wait in the kernel's socket queues; none is lost.

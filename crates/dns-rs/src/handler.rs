@@ -7,9 +7,10 @@ use arc_swap::ArcSwap;
 
 use hickory_proto::op::{Edns, Message, OpCode, Query, ResponseCode};
 
-use crate::blocking::{Policy, blocked_answer};
+use crate::blocking::{BlockingMode, Policy, blocked_answer};
 use crate::cache::{CacheKey, DnsCache};
-use crate::filter::Verdict;
+use crate::filter::{Explanation, Verdict};
+use crate::http::PolicyView;
 use crate::upstream::Upstream;
 
 /// UDP payload size advertised to EDNS clients (DNS flag day 2020).
@@ -109,6 +110,13 @@ impl<U: Upstream> Handler<U> {
 
 fn resolved(response: Message, source: Source) -> Resolution {
     Resolution { response, source }
+}
+
+impl<U: Upstream> PolicyView for Handler<U> {
+    fn explain(&self, domain: &str) -> (BlockingMode, Explanation) {
+        let policy = self.policy.load();
+        (policy.mode, policy.filter.explain(domain))
+    }
 }
 
 /// A fresh recursive query for `question`, independent of the client's header.

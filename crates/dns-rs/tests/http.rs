@@ -6,14 +6,33 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use common::{query, start_server, udp_exchange};
+use std::time::Duration;
+
+use dns_rs::cache::DnsCache;
+use dns_rs::config::Config;
+use dns_rs::handler::Handler;
 use dns_rs::http::{HttpState, serve_http};
 use dns_rs::metrics::Metrics;
+use dns_rs::upstream::DnsUpstream;
 use tokio::net::TcpListener;
+
+/// A handler whose policy denies `*.tracker.net` and `ads.example.com`, and
+/// allows `ok.tracker.net`; its upstream is never queried.
+fn policy() -> Arc<Handler<DnsUpstream>> {
+    let config = Config::from_toml(
+        "[blocking]\nmode = 'nxdomain'\ndeny = ['ads.example.com', '*.tracker.net']\nallow = ['ok.tracker.net']",
+    )
+    .unwrap();
+    let upstream = DnsUpstream::new("127.0.0.1:9".parse().unwrap(), Duration::from_millis(1));
+    let handler = Arc::new(Handler::new(upstream, DnsCache::new(1)));
+    handler.set_policy(config.blocking.policy([]).unwrap());
+    handler
+}
 
 async fn start_http(metrics: Arc<Metrics>) -> (SocketAddr, HttpState) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let state = HttpState::new(metrics);
+    let state = HttpState::new(metrics, policy());
     tokio::spawn(serve_http(listener, state.clone()));
     (addr, state)
 }
@@ -105,4 +124,68 @@ async fn malformed_queries_show_up_in_metrics() {
         text.contains(r#"dns_rs_queries_total{source="rejected",rcode="FORMERR",type="none"} 1"#),
         "{text}"
     );
+}
+
+async fn check(addr: SocketAddr, domain: &str) -> (u16, serde_json::Value) {
+    let response = get(addr, &format!("/api/v1/check/{domain}")).await;
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap();
+    (
+        status,
+        serde_json::from_str(&body).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn check_explains_a_blocked_domain() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    let (status, body) = check(addr, "ads.example.com").await;
+
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "domain": "ads.example.com",
+            "blocked": true,
+            "mode": "nxdomain",
+            "denied_by": {"kind": "exact", "rule": "ads.example.com", "origin": "config:deny"},
+            "allowed_by": null,
+        })
+    );
+}
+
+#[tokio::test]
+async fn check_explains_an_exception() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    let (_, body) = check(addr, "ok.tracker.net").await;
+
+    assert_eq!(body["blocked"], false);
+    assert_eq!(body["denied_by"]["rule"], "*.tracker.net");
+    assert_eq!(body["allowed_by"]["origin"], "config:allow");
+}
+
+#[tokio::test]
+async fn check_of_an_unlisted_domain_names_no_rule() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    let (_, body) = check(addr, "example.com").await;
+
+    assert_eq!(body["blocked"], false);
+    assert_eq!(body["denied_by"], serde_json::Value::Null);
+    assert_eq!(body["allowed_by"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn check_of_an_invalid_name_is_a_bad_request() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+    let too_long = format!("{}.com", "a".repeat(260));
+
+    for name in ["exa%20mple.com", "a..b", too_long.as_str()] {
+        let (status, body) = check(addr, name).await;
+
+        assert_eq!(status, 400, "{name}");
+        assert!(body["error"].is_string(), "{name}: {body}");
+    }
 }
