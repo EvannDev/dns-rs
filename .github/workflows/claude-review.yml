@@ -30,6 +30,10 @@ jobs:
           # `claude setup-token`, or an Anthropic API key.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # PRs opened by the docs agent come from the Claude app. Only that
+          # bot is allowed: '*' would let any app trigger a review with its
+          # own prompt on this public repository.
+          allowed_bots: claude
           track_progress: true
           use_sticky_comment: true
           prompt: |
