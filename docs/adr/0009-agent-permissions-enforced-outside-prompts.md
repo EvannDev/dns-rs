@@ -37,5 +37,9 @@ its way around; prompts only explain the limits.
 - A hook is a guardrail, not a sandbox: an agent allowed to edit code and
   run `cargo test` executes that code. Containment against a hostile agent
   would need an isolated environment.
+- The guard controls which programs run, not which files are written:
+  shell redirections (`>`), like the agent's own Write and Edit tools, can
+  write anywhere in the working tree, including the guard itself. Changes
+  to `.claude/` still go through a reviewed pull request.
 - Allowlists block some harmless commands (a `;` inside quotes splits the
   command); agents then ask, or use their file tools instead.

@@ -7,8 +7,10 @@ failures=0
 
 check() {
   local expected=$1 command=$2 actual
+  # perl's alarm stops a hanging guard: a hook killed by a timeout lets the
+  # command run, so hanging is a failure (exit 142) like any other.
   jq -n --arg c "$command" '{tool_name: "Bash", tool_input: {command: $c}}' \
-    | "$guard" >/dev/null 2>&1
+    | perl -e 'alarm 5; exec @ARGV' "$guard" >/dev/null 2>&1
   actual=$?
   if [ "$actual" != "$expected" ]; then
     echo "FAIL: expected exit $expected, got $actual: $command"
@@ -81,6 +83,23 @@ check 2 'git grep -O"sh -c x" pattern'
 check 2 'cargo'
 check 2 'git'
 check 0 'ls'
+# Environment assignments can run programs through git and cargo.
+check 2 'GIT_EXTERNAL_DIFF=/tmp/x.sh git diff'
+check 2 'GIT_PAGER=/tmp/x.sh git log'
+check 2 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=x git log'
+check 2 'RUSTC_WRAPPER=/tmp/x.sh cargo build'
+check 2 'LD_PRELOAD=/tmp/x.so cargo test'
+check 0 'RUST_BACKTRACE=1 cargo test'
+# Options that make cargo or text tools run programs.
+check 2 'cargo --config=build.rustc-wrapper="/tmp/x.sh" build'
+check 2 'cargo build --config build.rustc-wrapper=/tmp/x.sh'
+check 2 'cargo -Zunstable-options test'
+check 2 'rg --pre=/tmp/x.sh pattern'
+check 2 'sort --compress-program=/tmp/x.sh file'
+# A dangling -C must block, not loop forever.
+check 2 'git -C'
+check 2 'git -C; git push'
+check 2 'git -C crates'
 # Still allowed: common read-only and build forms.
 check 0 'RUST_LOG=debug cargo test -q'
 check 0 'cd crates/dns-rs && cargo test'
@@ -88,6 +107,7 @@ check 0 'git --no-pager diff --stat'
 check 0 'git -C crates/dns-rs log --oneline -3'
 check 0 'cargo +1.99.1 clippy --all-targets -- -D warnings'
 check 0 'cargo test -q 2>&1 | grep "test result" | head -3'
+check 0 'cargo test --release -- --nocapture'
 check 0 'git show HEAD:crates/dns-rs/src/lib.rs | head -20'
 
 if [ "$failures" -eq 0 ]; then echo "all guard tests passed"; else exit 1; fi

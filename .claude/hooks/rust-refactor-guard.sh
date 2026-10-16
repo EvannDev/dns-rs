@@ -28,8 +28,14 @@ case $command in
 esac
 
 # Allowed cargo subcommands; `+toolchain` and flags may come first.
+# --config and -Z can set a rustc wrapper or a linker, anywhere in the line.
 check_cargo() {
   local word
+  for word in "$@"; do
+    case $word in
+      --config* | -Z*) block "cargo $word" ;;
+    esac
+  done
   for word in "$@"; do
     case $word in
       +* | -*) continue ;;
@@ -45,7 +51,10 @@ check_cargo() {
 check_git() {
   while [ $# -gt 0 ]; do
     case $1 in
-      -C) shift 2 ;;
+      -C)
+        [ $# -ge 2 ] || block "git -C without a directory"
+        shift 2
+        ;;
       --no-pager | -P) shift ;;
       -*) block "git option $1" ;;
       status | diff | log | show | blame | ls-files | rev-parse | shortlog | describe)
@@ -80,9 +89,14 @@ check_git() {
 while IFS= read -r segment; do
   read -ra words <<<"$segment"
   i=0
-  # Skip leading VAR=value assignments.
+  # Leading VAR=value assignments: only harmless ones. Others (GIT_PAGER,
+  # GIT_CONFIG_*, RUSTC_WRAPPER, LD_PRELOAD…) can make git or cargo run
+  # arbitrary programs.
   while [ "$i" -lt "${#words[@]}" ] && [[ ${words[$i]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
-    i=$((i + 1))
+    case ${words[$i]%%=*} in
+      RUST_LOG | RUST_BACKTRACE) i=$((i + 1)) ;;
+      *) block "environment assignment ${words[$i]%%=*}" ;;
+    esac
   done
   [ "$i" -lt "${#words[@]}" ] || continue
   program=${words[$i]}
@@ -91,7 +105,9 @@ while IFS= read -r segment; do
     # ${a[@]+"${a[@]}"}: an empty array is "unbound" for bash 3.2 under set -u.
     cargo) check_cargo ${rest[@]+"${rest[@]}"} ;;
     git) check_git ${rest[@]+"${rest[@]}"} ;;
-    cd | pwd | ls | cat | head | tail | wc | sort | uniq | diff | grep | rg | jq | echo | printf | true | test | '[') ;;
+    # Not rg (--pre) nor sort (--compress-program): they run programs; the
+    # agent has its Grep tool.
+    cd | pwd | ls | cat | head | tail | wc | uniq | diff | grep | jq | echo | printf | true | test | '[') ;;
     *) block "'$program' is not on the allowlist" ;;
   esac
 done < <(
