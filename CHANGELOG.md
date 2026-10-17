@@ -64,8 +64,17 @@ All notable changes to dns-rs are documented here. The format is based on
   restart; upstream and cache settings are values passed as environment
   variables, so a change rolls every replica. Not published to a chart repository yet (#22).
 
+- Helm chart production features: an API token from `api.token` or
+  `api.existingSecret` (mounted as a file), a PodDisruptionBudget, topology
+  spread across nodes, an optional ServiceMonitor and an optional ingress
+  NetworkPolicy (#23).
+- `DNS_RS_API_TOKEN_FILE` sets `http.api_token_file` from the environment (#23).
+
 ### Changed
 
+- The API token file is read again on each configuration poll and on `SIGHUP`:
+  rotating the token no longer needs a restart. An invalid or missing file
+  keeps the previous token (#23).
 - dns-rs binds its HTTP server before loading blocklists: `/healthz` answers
   while lists load and `/readyz` stays `503` until the first policy is
   installed (#22).

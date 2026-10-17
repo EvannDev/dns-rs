@@ -33,6 +33,7 @@ Durations use the humantime format (`2s`, `500ms`, `24h`).
 | `DNS_RS_LISTEN` | `server.listen` |
 | `DNS_RS_HTTP_LISTEN` | `http.listen` |
 | `DNS_RS_API_TOKEN` | API token, at least 16 characters; wins over `http.api_token_file`. Not a TOML key: keep the token out of the file |
+| `DNS_RS_API_TOKEN_FILE` | `http.api_token_file`. The Helm chart uses it because it refuses `[http]` in the reloaded configuration |
 | `DNS_RS_UPSTREAM` | `upstream.server` |
 | `DNS_RS_UPSTREAM_TIMEOUT_MS` | `upstream.timeout`, in milliseconds |
 | `DNS_RS_CACHE_SIZE` | `cache.size` |
@@ -65,6 +66,9 @@ logs `configuration changes need a restart to apply` once, listing the
 settings, and keeps the running values. An invalid or missing file is
 rejected (logged once as `configuration rejected, keeping the previous one`)
 and the previous configuration keeps working.
+
+The API token file is read again at the same moments, so a rotated token
+applies without a restart (see [Authentication](metrics.md#authentication)).
 
 Blocklists are downloaded again every `blocking.refresh`. On a configuration
 reload only lists that are new are downloaded; lists that were removed stop
