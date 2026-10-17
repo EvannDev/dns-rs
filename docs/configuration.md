@@ -24,6 +24,35 @@ Durations use the humantime format (`2s`, `500ms`, `24h`).
 | `blocking.allow` | none | Same syntax; always wins over `deny`, regexes and lists |
 | `blocking.deny_regex` | none | Regexes of names to block |
 | `blocking.allow_regex` | none | Regexes of names to allow |
+| `local.ttl` | `300` | TTL of local answers, in seconds |
+| `local.records` | none | `{ name = "nas.home.arpa", ip = "192.168.1.10" }` tables answered by dns-rs itself (see [Local records](#local-records)) |
+
+## Local records
+
+`local.records` lists names dns-rs answers itself, as Pi-hole's local DNS
+does ([ADR 0016](adr/0016-local-records.md)):
+
+```toml
+[local]
+ttl = 300
+records = [
+  { name = "nas.home.arpa", ip = "192.168.1.10" },
+  { name = "nas.home.arpa", ip = "fd00::10" },
+]
+```
+
+- The address family gives the type: A for IPv4, AAAA for IPv6. A name may
+  have several records; ANY returns all of them.
+- Names match exactly and without regard to case, and the answer keeps the
+  name as the client wrote it. Subdomains of a local name are not local.
+- Local records are answered before blocking, so a list never blocks them.
+  The answer is authoritative (AA) and uses neither the upstream nor the
+  cache.
+- For a local name, other types (MX, TXT...) and a family with no record get
+  an empty NOERROR, never NXDOMAIN.
+- These queries have the source `local` in the [query log](logging.md#query-log)
+  and the [metrics](metrics.md).
+- Not supported yet: PTR (reverse lookups) and CNAME.
 
 ## Environment variables
 
@@ -51,6 +80,8 @@ Beyond syntax, these are rejected:
 
 - `upstream.timeout` of zero.
 - `blocking.refresh` under one minute.
+- A `local.records` name that is not a domain of at least two labels (the
+  error names `local.records`), or an address that does not parse.
 - A `deny` or `allow` entry that is not a domain or `*.domain`.
 - A regex that does not compile, or a regex list whose patterns are too
   large together (each list is compiled as one set). The error names the key.
@@ -60,7 +91,7 @@ Beyond syntax, these are rejected:
 ## Reload without restart
 
 The file is read every 10 seconds, compared by content, and immediately on
-`SIGHUP`. Changes to `[blocking]` apply at once. Changes to `server.listen`,
+`SIGHUP`. Changes to `[blocking]` and `[local]` apply at once. Changes to `server.listen`,
 `http.listen`, `http.api_token_file`, `upstream.server`, `upstream.timeout` and `cache.size` need a restart: dns-rs
 logs `configuration changes need a restart to apply` once, listing the
 settings, and keeps the running values. An invalid or missing file is
@@ -72,4 +103,5 @@ applies without a restart (see [Authentication](metrics.md#authentication)).
 
 Blocklists are downloaded again every `blocking.refresh`. On a configuration
 reload only lists that are new are downloaded; lists that were removed stop
-blocking. See [ADR 0010](adr/0010-hot-reload-by-polling-and-sighup.md).
+blocking. An invalid `[local]` rejects the whole file, so the previous
+records stay in force. See [ADR 0010](adr/0010-hot-reload-by-polling-and-sighup.md).

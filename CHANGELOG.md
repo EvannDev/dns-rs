@@ -5,6 +5,16 @@ All notable changes to dns-rs are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Local records: `[local]` with `records = [{ name, ip }]` and `ttl` (default
+  `300`). dns-rs answers these names itself (A or AAAA by address family,
+  authoritative), before blocking and without the upstream or the cache.
+  Other types and a missing family get an empty NOERROR. Queries have the
+  source `local` in the query log and metrics. `[local]` applies on reload
+  without a restart, and the Helm chart accepts it in `config` (#30,
+  [ADR 0016](docs/adr/0016-local-records.md)).
+
 ## [0.1.0] - 2026-10-17
 
 ### Added
