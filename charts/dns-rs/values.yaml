@@ -1,0 +1,45 @@
+# Replicas share nothing: each loads the configuration and lists itself.
+replicaCount: 2
+
+image:
+  repository: ghcr.io/evanndev/dns-rs
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# dns-rs.toml, as TOML text (see dns-rs.example.toml). It becomes a
+# ConfigMap that dns-rs reads again every 10 s: [blocking] changes apply
+# without restarting pods. server.listen and http.listen are set by the
+# chart and need not appear here.
+config: |
+  [blocking]
+  mode = "null"
+  # lists = ["https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"]
+
+service:
+  dns:
+    type: ClusterIP
+    port: 53
+    # With type LoadBalancer, "Local" keeps client IP addresses, which
+    # per-client rules and the query log need.
+    externalTrafficPolicy: ""
+    annotations: {}
+  http:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

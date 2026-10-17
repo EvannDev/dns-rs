@@ -1,0 +1,11 @@
+apiVersion: v2
+name: dns-rs
+description: Network-wide DNS sinkhole in Rust, run as stateless replicas
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/EvannDev/dns-rs
+sources:
+  - https://github.com/EvannDev/dns-rs
+license: Apache-2.0
+keywords: [dns, sinkhole, adblock, pihole]

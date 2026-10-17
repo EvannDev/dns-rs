@@ -1,0 +1,45 @@
+suite: values schema
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: rejects zero replicas
+    set:
+      replicaCount: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "replicaCount"
+
+  - it: rejects an unknown service type
+    set:
+      service.dns.type: Loadbalancer
+    asserts:
+      - failedTemplate:
+          errorPattern: "type"
+
+  - it: rejects an unknown traffic policy
+    set:
+      service.dns.externalTrafficPolicy: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalTrafficPolicy"
+
+  # The configuration is TOML text: a YAML map would lose integer types.
+  - it: rejects a configuration given as a map
+    set:
+      config:
+        cache:
+          size: 20000
+    asserts:
+      - failedTemplate:
+          errorPattern: "config"
+
+  - it: rejects unknown top-level keys, catching typos
+    set:
+      replicas: 3
+    asserts:
+      - failedTemplate:
+          errorPattern: "replicas"
+
+  - it: accepts the default values
+    asserts:
+      - notFailedTemplate: {}

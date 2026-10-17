@@ -28,5 +28,7 @@ ENV DNS_RS_LISTEN=0.0.0.0:5353 \
     DNS_RS_HTTP_LISTEN=0.0.0.0:8080
 EXPOSE 5353/udp 5353/tcp 8080/tcp
 
-USER nonroot
+# Numeric, so Kubernetes can verify runAsNonRoot: true (the "nonroot" name
+# cannot be checked without reading the image's /etc/passwd).
+USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/dns-rs"]

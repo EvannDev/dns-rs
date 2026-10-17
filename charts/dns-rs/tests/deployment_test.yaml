@@ -1,0 +1,105 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: runs two replicas of the chart's image version by default
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.replicas
+          value: 2
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/evanndev/dns-rs:0.1.0
+
+  - it: uses the image tag given in values
+    set:
+      image.tag: edge
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/evanndev/dns-rs:edge
+
+  - it: exposes DNS on 5353 (UDP and TCP) and HTTP on 8080
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: {name: dns-udp, containerPort: 5353, protocol: UDP}
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: {name: dns-tcp, containerPort: 5353, protocol: TCP}
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: {name: http, containerPort: 8080, protocol: TCP}
+
+  - it: reads its configuration from the mounted ConfigMap
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DNS_RS_CONFIG, value: /etc/dns-rs/dns-rs.toml}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: {name: config, mountPath: /etc/dns-rs, readOnly: true}
+      - equal:
+          path: spec.template.spec.volumes[0].configMap.name
+          value: RELEASE-NAME-dns-rs
+
+  # A checksum annotation would restart pods on every config change, while
+  # dns-rs reloads [blocking] changes by itself (ADR 0010).
+  - it: does not restart pods when the configuration changes
+    asserts:
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/config"]
+
+  - it: probes liveness and readiness over HTTP
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet
+          value: {path: /healthz, port: http}
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet
+          value: {path: /readyz, port: http}
+
+  # Kubernetes can only verify runAsNonRoot against a numeric user; the
+  # image's "nonroot" name made pods fail with CreateContainerConfigError.
+  - it: runs as the numeric nonroot user
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 65532
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 65532
+
+  - it: runs hardened, without privileges
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+
+  - it: passes scheduling settings through
+    set:
+      nodeSelector: {kubernetes.io/arch: arm64}
+      tolerations: [{key: dedicated, operator: Exists}]
+      podLabels: {team: network}
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value: {kubernetes.io/arch: arm64}
+      - equal:
+          path: spec.template.spec.tolerations
+          value: [{key: dedicated, operator: Exists}]
+      - equal:
+          path: spec.template.metadata.labels.team
+          value: network

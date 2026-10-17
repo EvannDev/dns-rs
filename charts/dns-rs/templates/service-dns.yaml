@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dns-rs.fullname" . }}-dns
+  labels:
+    {{- include "dns-rs.labels" . | nindent 4 }}
+  {{- with .Values.service.dns.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.dns.type }}
+  {{- with .Values.service.dns.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+  selector:
+    {{- include "dns-rs.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: dns-udp
+      port: {{ .Values.service.dns.port }}
+      targetPort: dns-udp
+      protocol: UDP
+    - name: dns-tcp
+      port: {{ .Values.service.dns.port }}
+      targetPort: dns-tcp
+      protocol: TCP

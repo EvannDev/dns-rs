@@ -1,0 +1,9 @@
+dns-rs {{ .Chart.AppVersion }} is running as {{ .Values.replicaCount }} replica(s).
+
+DNS:      {{ include "dns-rs.fullname" . }}-dns:{{ .Values.service.dns.port }} (UDP and TCP)
+Metrics:  {{ include "dns-rs.fullname" . }}-http:{{ .Values.service.http.port }}/metrics
+
+Try it:
+  kubectl -n {{ .Release.Namespace }} run dig --rm -it --restart=Never \
+    --image=registry.k8s.io/e2e-test-images/jessie-dnsutils:1.3 -- \
+    dig @{{ include "dns-rs.fullname" . }}-dns.{{ .Release.Namespace }}.svc example.com

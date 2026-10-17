@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dns-rs.fullname" . }}
+  labels:
+    {{- include "dns-rs.labels" . | nindent 4 }}
+data:
+  dns-rs.toml: |
+    {{- .Values.config | nindent 4 }}
