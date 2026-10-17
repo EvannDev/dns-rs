@@ -77,4 +77,6 @@ so that N replicas can run behind one service.
 2. Observability: query log, Prometheus metrics, REST API
 3. Groups/clients, local records, conditional forwarding, DoH/DoT upstream, DNSSEC
 4. Container image (done, published to GHCR), control plane / data plane split, multi-replica
-5. Kubernetes manifests, then CRDs
+5. Kubernetes: Helm chart (done: Deployment, Services, ConfigMap; planned: API
+   token Secret, PodDisruptionBudget, topology spread, ServiceMonitor,
+   NetworkPolicy, kind end-to-end in CI, chart publication), then CRDs

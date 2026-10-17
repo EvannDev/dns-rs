@@ -1,0 +1,43 @@
+suite: services
+templates:
+  - templates/service-dns.yaml
+  - templates/service-http.yaml
+tests:
+  - it: serves DNS on port 53 over UDP and TCP
+    template: templates/service-dns.yaml
+    asserts:
+      - equal:
+          path: spec.type
+          value: ClusterIP
+      - contains:
+          path: spec.ports
+          content: {name: dns-udp, port: 53, targetPort: dns-udp, protocol: UDP}
+      - contains:
+          path: spec.ports
+          content: {name: dns-tcp, port: 53, targetPort: dns-tcp, protocol: TCP}
+
+  - it: can keep client addresses behind a load balancer
+    template: templates/service-dns.yaml
+    set:
+      service.dns.type: LoadBalancer
+      service.dns.externalTrafficPolicy: Local
+    asserts:
+      - equal:
+          path: spec.type
+          value: LoadBalancer
+      - equal:
+          path: spec.externalTrafficPolicy
+          value: Local
+
+  - it: leaves the traffic policy to Kubernetes by default
+    template: templates/service-dns.yaml
+    asserts:
+      - notExists:
+          path: spec.externalTrafficPolicy
+
+  - it: serves probes, metrics and the API on the http service
+    template: templates/service-http.yaml
+    asserts:
+      - equal:
+          path: spec.ports
+          value: [{name: http, port: 8080, targetPort: http, protocol: TCP}]

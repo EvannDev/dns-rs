@@ -1,0 +1,108 @@
+{{- /* Startup settings in the reloaded configuration would only reach pods
+     created later: replicas would run different values. */ -}}
+{{- if regexMatch "(?m)^[ \t]*(\\[[ \t]*(server|http|upstream|cache)[ \t]*\\]|(server|http|upstream|cache)[ \t]*[.=])" .Values.config }}
+{{- fail "config must only hold [blocking]: set upstream.server, upstream.timeoutMs and cache.size in values (listen addresses are set by the chart), so changes roll every replica" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dns-rs.fullname" . }}
+  labels:
+    {{- include "dns-rs.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "dns-rs.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dns-rs.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # Numeric, so the kubelet can verify runAsNonRoot (distroless nonroot).
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dns-rs
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # The ConfigMap is read again every 10 s (ADR 0010).
+            - name: DNS_RS_CONFIG
+              value: /etc/dns-rs/dns-rs.toml
+            # Must match the container ports below.
+            - name: DNS_RS_LISTEN
+              value: "0.0.0.0:5353"
+            - name: DNS_RS_HTTP_LISTEN
+              value: "0.0.0.0:8080"
+            # Startup settings: a change rolls every replica.
+            - name: DNS_RS_UPSTREAM
+              value: {{ .Values.upstream.server | quote }}
+            - name: DNS_RS_UPSTREAM_TIMEOUT_MS
+              # int64: Helm reads numbers as float64, and 1000000 would
+              # otherwise print as "1e+06".
+              value: {{ .Values.upstream.timeoutMs | int64 | quote }}
+            - name: DNS_RS_CACHE_SIZE
+              value: {{ .Values.cache.size | int64 | quote }}
+          ports:
+            - name: dns-udp
+              containerPort: 5353
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: 5353
+              protocol: TCP
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dns-rs
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "dns-rs.fullname" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,21 @@
+suite: configmap
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: holds the configuration as given, in dns-rs.toml
+    set:
+      config: |
+        [blocking]
+        deny = ["ads.example.com"]
+        [cache]
+        size = 20000
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: data["dns-rs.toml"]
+          value: |
+            [blocking]
+            deny = ["ads.example.com"]
+            [cache]
+            size = 20000

@@ -19,3 +19,4 @@ an old one.
 | [0011](0011-per-replica-bounded-metrics.md) | Per-replica metrics with bounded labels | Accepted |
 | [0012](0012-api-requires-a-bearer-token.md) | The API requires a bearer token | Accepted |
 | [0013](0013-container-listens-on-an-unprivileged-port.md) | The container listens on an unprivileged port | Accepted |
+| [0014](0014-helm-config-as-toml-text.md) | The Helm chart takes the configuration as TOML text | Accepted |
