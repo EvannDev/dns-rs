@@ -22,3 +22,4 @@ an old one.
 | [0014](0014-helm-config-as-toml-text.md) | The Helm chart takes the configuration as TOML text | Accepted |
 | [0015](0015-api-token-file-is-reloaded.md) | The API token file is reloaded | Accepted |
 | [0016](0016-local-records.md) | Local records | Accepted |
+| [0017](0017-conditional-forwarding.md) | Conditional forwarding | Accepted |

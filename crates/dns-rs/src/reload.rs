@@ -1,6 +1,6 @@
 //! Applies configuration and blocklist changes while dns-rs runs.
 //!
-//! Only `[blocking]` changes apply live; settings that set up sockets, the
+//! Only `[blocking]`, `[local]` and `[[forward]]` changes apply live; settings that set up sockets, the
 //! upstream client or the cache are reported as needing a restart.
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use crate::http::ApiTokenSlot;
 use crate::metrics::{Metrics, ReloadResult};
 use crate::sources::{FetchError, ListLoader, ListResult, ListStore};
 use crate::status::Status;
-use crate::upstream::Upstream;
+use crate::upstream::{Connect, Upstream};
 
 /// What reading the API token file again did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +36,8 @@ pub enum TokenChange {
 pub enum ConfigChange {
     /// The configuration is the same as the last one seen.
     Unchanged,
-    /// The new live settings (`[blocking]`, `[local]`) are in force. Settings listed in
+    /// The new live settings (`[blocking]`, `[local]`, `[[forward]]`) are
+    /// in force. Settings listed in
     /// `restart_required` changed too but were not applied.
     Applied { restart_required: Vec<&'static str> },
     /// The new configuration is invalid or unreadable; the previous one
@@ -68,7 +69,7 @@ pub struct Reloader<U> {
     last_token_rejection: Option<String>,
 }
 
-impl<U: Upstream> Reloader<U> {
+impl<U: Connect> Reloader<U> {
     /// Also keeps `slot` in step with the API token file, if one is set.
     #[must_use]
     pub fn with_api_token(mut self, slot: ApiTokenSlot) -> Self {
@@ -129,6 +130,7 @@ impl<U: Upstream> Reloader<U> {
         let policy = build_policy(&config.blocking, &store).await?;
         install(&handler, &metrics, &status, policy);
         install_local(&handler, &config.local);
+        install_forwards(&handler, &config);
         Ok(Self {
             handler,
             metrics,
@@ -218,6 +220,12 @@ impl<U: Upstream> Reloader<U> {
             install_local(&self.handler, &next.local);
             self.active.local = next.local.clone();
         }
+        if next.forward != self.active.forward {
+            self.active.forward.clone_from(&next.forward);
+            // Built from the configuration in force: servers keep the
+            // upstream timeout until a restart.
+            install_forwards(&self.handler, &self.active);
+        }
         self.last_seen = next;
         self.metrics.record_config_reload(ReloadResult::Applied);
         tracing::info!("configuration reloaded");
@@ -287,6 +295,12 @@ impl<U: Upstream> Reloader<U> {
     }
 }
 
+fn install_forwards<U: Connect>(handler: &Handler<U>, config: &Config) {
+    let forwards = config.forwards(U::connect);
+    tracing::info!(domains = forwards.len(), "forwarded domains loaded");
+    handler.set_forwards(forwards);
+}
+
 fn install_local<U: Upstream>(handler: &Handler<U>, local: &LocalConfig) {
     let records = local.records();
     tracing::info!(names = records.len(), "local records loaded");
@@ -352,10 +366,12 @@ async fn build_policy(blocking: &BlockingConfig, store: &ListStore) -> Result<Po
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
 
     use hickory_proto::op::{Message, MessageType, OpCode, Query};
-    use hickory_proto::rr::{Name, RecordType};
+    use hickory_proto::rr::rdata::A;
+    use hickory_proto::rr::{Name, RData, Record, RecordType};
 
     use std::time::SystemTime;
 
@@ -365,15 +381,41 @@ mod tests {
     use crate::sources::Limits;
     use crate::upstream::UpstreamError;
 
-    /// Fails every query: these tests only look at whether a name is blocked.
-    struct NoUpstream;
+    /// As the upstream (`default`), fails every query: these tests look at
+    /// whether a name is blocked. As the server of a forwarded domain, says
+    /// which one it is: it answers with its address, and its timeout in
+    /// milliseconds as the TTL.
+    #[derive(Default)]
+    struct TestUpstream {
+        server: Option<(SocketAddr, Duration)>,
+    }
 
-    impl Upstream for NoUpstream {
+    impl Upstream for TestUpstream {
         fn query(
             &self,
-            _query: &Message,
+            query: &Message,
         ) -> impl Future<Output = Result<Message, UpstreamError>> + Send {
-            std::future::ready(Err(UpstreamError::Timeout))
+            std::future::ready(match self.server {
+                Some((SocketAddr::V4(addr), timeout)) => {
+                    let mut response = Message::response(query.metadata.id, OpCode::Query);
+                    response.add_queries(query.queries.iter().cloned());
+                    response.add_answer(Record::from_rdata(
+                        query.queries[0].name().clone(),
+                        u32::try_from(timeout.as_millis()).unwrap(),
+                        RData::A(A(*addr.ip())),
+                    ));
+                    Ok(response)
+                }
+                _ => Err(UpstreamError::Timeout),
+            })
+        }
+    }
+
+    impl Connect for TestUpstream {
+        fn connect(addr: SocketAddr, timeout: Duration) -> Self {
+            Self {
+                server: Some((addr, timeout)),
+            }
         }
     }
 
@@ -416,7 +458,7 @@ mod tests {
             self.write("dns-rs.toml", toml);
         }
 
-        async fn reloader(&self) -> (Reloader<NoUpstream>, Arc<Handler<NoUpstream>>) {
+        async fn reloader(&self) -> (Reloader<TestUpstream>, Arc<Handler<TestUpstream>>) {
             self.reloader_with_env(&[]).await
         }
 
@@ -424,8 +466,8 @@ mod tests {
         async fn reloader_with_env(
             &self,
             env: &[(&str, &str)],
-        ) -> (Reloader<NoUpstream>, Arc<Handler<NoUpstream>>) {
-            let handler = Arc::new(Handler::new(NoUpstream, DnsCache::new(10)));
+        ) -> (Reloader<TestUpstream>, Arc<Handler<TestUpstream>>) {
+            let handler = Arc::new(Handler::new(TestUpstream::default(), DnsCache::new(10)));
             let config_path = self.path("dns-rs.toml");
             let env: Vec<(String, String)> = env
                 .iter()
@@ -453,7 +495,7 @@ mod tests {
         }
     }
 
-    async fn blocked(handler: &Handler<NoUpstream>, name: &str) -> bool {
+    async fn blocked(handler: &Handler<TestUpstream>, name: &str) -> bool {
         let mut request = Message::new(1, MessageType::Query, OpCode::Query);
         request.add_query(Query::query(Name::from_ascii(name).unwrap(), RecordType::A));
         handler.handle(&request).await.source == Source::Blocked
@@ -686,7 +728,7 @@ mod tests {
         use super::*;
 
         /// Starts the loop in the background, polling every 10 s.
-        async fn running(setup: &Setup) -> (Arc<Handler<NoUpstream>>, mpsc::Sender<()>) {
+        async fn running(setup: &Setup) -> (Arc<Handler<TestUpstream>>, mpsc::Sender<()>) {
             let (reloader, handler) = setup.reloader().await;
             let (reload_now, receiver) = mpsc::channel(1);
             tokio::spawn(reloader.run(Duration::from_secs(10), receiver));
@@ -695,7 +737,7 @@ mod tests {
 
         /// Waits (in paused time) until `name` is blocked, at most `limit`.
         async fn blocked_within(
-            handler: &Handler<NoUpstream>,
+            handler: &Handler<TestUpstream>,
             name: &str,
             limit: Duration,
         ) -> bool {
@@ -1029,7 +1071,7 @@ mod tests {
         const NEW: &str = "new-token-0123456789";
         const ENV: &str = "env-token-0123456789";
 
-        async fn reloader_with_token(setup: &Setup) -> (Reloader<NoUpstream>, ApiTokenSlot) {
+        async fn reloader_with_token(setup: &Setup) -> (Reloader<TestUpstream>, ApiTokenSlot) {
             setup.write("token", OLD);
             setup.config(&format!(
                 "[http]\napi_token_file = '{}'",
@@ -1160,6 +1202,123 @@ mod tests {
         }
     }
 
+    mod forwarding {
+        use std::net::Ipv4Addr;
+
+        use super::*;
+
+        const HOME: &str = "[[forward]]\ndomain = 'home.arpa'\nserver = '192.168.1.1'";
+        const LAB: &str = "[[forward]]\ndomain = 'home.arpa'\nserver = '192.168.1.2'";
+
+        /// The source and the first answer to an A query for `name`.
+        async fn resolve(handler: &Handler<TestUpstream>, name: &str) -> (Source, Option<Record>) {
+            let mut request = Message::new(1, MessageType::Query, OpCode::Query);
+            request.add_query(Query::query(Name::from_ascii(name).unwrap(), RecordType::A));
+            let resolution = handler.handle(&request).await;
+            (
+                resolution.source,
+                resolution.response.answers.first().cloned(),
+            )
+        }
+
+        fn address(answer: Option<Record>) -> Option<RData> {
+            answer.map(|record| record.data)
+        }
+
+        fn ip(last: u8) -> RData {
+            RData::A(A(Ipv4Addr::new(192, 168, 1, last)))
+        }
+
+        #[tokio::test]
+        async fn rules_are_in_force_from_startup() {
+            let setup = Setup::new();
+            setup.config(HOME);
+
+            let (_reloader, handler) = setup.reloader().await;
+
+            let (source, answer) = resolve(&handler, "nas.home.arpa.").await;
+            assert_eq!(source, Source::Forwarded);
+            assert_eq!(address(answer), Some(ip(1)));
+        }
+
+        // ADR 0017: [[forward]] applies live, like [blocking] and [local].
+        #[tokio::test]
+        async fn changed_rules_apply_without_a_restart() {
+            let setup = Setup::new();
+            setup.config(HOME);
+            let (mut reloader, handler) = setup.reloader().await;
+
+            setup.config(LAB);
+            let change = reloader.reload_config().await;
+
+            assert_eq!(
+                change,
+                ConfigChange::Applied {
+                    restart_required: vec![]
+                }
+            );
+            assert_eq!(
+                address(resolve(&handler, "pc.home.arpa.").await.1),
+                Some(ip(2))
+            );
+        }
+
+        #[tokio::test]
+        async fn invalid_rules_keep_the_previous_ones() {
+            let setup = Setup::new();
+            setup.config(HOME);
+            let (mut reloader, handler) = setup.reloader().await;
+
+            setup.config(&format!("{HOME}\n{LAB}"));
+            let change = reloader.reload_config().await;
+
+            let ConfigChange::Rejected(reason) = change else {
+                panic!("expected a rejection, got {change:?}");
+            };
+            assert!(reason.contains("is given twice"), "{reason}");
+            assert_eq!(
+                address(resolve(&handler, "nas.home.arpa.").await.1),
+                Some(ip(1))
+            );
+        }
+
+        // upstream.timeout needs a restart: new servers keep the one in force.
+        #[tokio::test]
+        async fn new_servers_keep_the_timeout_in_force() {
+            let setup = Setup::new();
+            setup.config(&format!("[upstream]\ntimeout = '700ms'\n{HOME}"));
+            let (mut reloader, handler) = setup.reloader().await;
+
+            setup.config(&format!("[upstream]\ntimeout = '900ms'\n{LAB}"));
+            let change = reloader.reload_config().await;
+
+            assert_eq!(
+                change,
+                ConfigChange::Applied {
+                    restart_required: vec!["upstream.timeout"]
+                }
+            );
+            let answer = resolve(&handler, "nas.home.arpa.").await.1.unwrap();
+            assert_eq!(answer.data, ip(2));
+            assert_eq!(answer.ttl, 700);
+        }
+
+        // Installing rules empties the cache (ADR 0017): only a change may.
+        #[tokio::test]
+        async fn other_changes_keep_the_cache() {
+            let setup = Setup::new();
+            setup.config(HOME);
+            let (mut reloader, handler) = setup.reloader().await;
+            resolve(&handler, "nas.home.arpa.").await;
+
+            setup.config(&format!("{HOME}\n[blocking]\ndeny = ['ads.example.com']"));
+            reloader.reload_config().await;
+
+            assert_eq!(handler.cached_responses(), 1);
+            assert_eq!(resolve(&handler, "nas.home.arpa.").await.0, Source::Cache);
+        }
+    }
+
     mod local_records {
         use super::*;
 
@@ -1167,7 +1326,7 @@ mod tests {
         const PRINTER: &str =
             "[local]\nrecords = [{ name = 'printer.home.arpa', ip = '192.168.1.20' }]";
 
-        async fn source(handler: &Handler<NoUpstream>, name: &str) -> Source {
+        async fn source(handler: &Handler<TestUpstream>, name: &str) -> Source {
             let mut request = Message::new(1, MessageType::Query, OpCode::Query);
             request.add_query(Query::query(Name::from_ascii(name).unwrap(), RecordType::A));
             handler.handle(&request).await.source

@@ -108,6 +108,11 @@ impl DnsCache {
         self.len() == 0
     }
 
+    /// Drops every entry.
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<CacheKey, Entry>> {
         // A panic while holding the lock cannot leave the map inconsistent,
         // so recovering from poisoning is safe.
@@ -207,6 +212,19 @@ mod tests {
 
         let hit = cache.get(&key("example.com."), now).expect("cache hit");
         assert_eq!(hit.answers, answer("example.com.", 300).answers);
+    }
+
+    #[test]
+    fn clear_drops_every_entry() {
+        let cache = DnsCache::new(10);
+        let now = Instant::now();
+        cache.insert(key("example.com."), &answer("example.com.", 300), now);
+        cache.insert(key("example.org."), &answer("example.org.", 300), now);
+
+        cache.clear();
+
+        assert!(cache.is_empty());
+        assert!(cache.get(&key("example.com."), now).is_none());
     }
 
     #[test]

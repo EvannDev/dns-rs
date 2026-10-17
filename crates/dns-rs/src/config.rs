@@ -1,6 +1,7 @@
 //! Declarative configuration: a TOML file named by `DNS_RS_CONFIG`, whose
 //! values `DNS_RS_*` environment variables can override one by one.
 
+use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -13,7 +14,8 @@ use subtle::ConstantTimeEq;
 
 use crate::blocking::{BlockingMode, Policy};
 use crate::filter::{FilterBuilder, Rule};
-use crate::lists::{BareDomains, ParsedList, is_valid_domain};
+use crate::forward::Forwards;
+use crate::lists::{BareDomains, ParsedList, is_valid_domain, is_valid_name};
 use crate::local::{self, LocalRecords};
 
 const DNS_PORT: u16 = 53;
@@ -31,6 +33,9 @@ pub struct Config {
     pub cache: CacheConfig,
     pub blocking: BlockingConfig,
     pub local: LocalConfig,
+    /// `[[forward]]` tables: domains sent to their own server (ADR 0017);
+    /// applies live.
+    pub forward: Vec<ForwardConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -160,6 +165,16 @@ impl LocalConfig {
 pub struct LocalRecordConfig {
     pub name: String,
     pub ip: IpAddr,
+}
+
+/// One domain, with the names under it, and the server that answers them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardConfig {
+    pub domain: String,
+    /// The port defaults to 53.
+    #[serde(deserialize_with = "deserialize_dns_server")]
+    pub server: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -410,6 +425,17 @@ impl Config {
         .collect()
     }
 
+    /// The forwarded domains, each server built by `connect` with the
+    /// upstream timeout.
+    pub fn forwards<U>(&self, connect: impl Fn(SocketAddr, Duration) -> U) -> Forwards<U> {
+        Forwards::new(self.forward.iter().map(|rule| {
+            (
+                rule.domain.as_str(),
+                connect(rule.server, self.upstream.timeout),
+            )
+        }))
+    }
+
     /// The API token: `DNS_RS_API_TOKEN`, else the content of
     /// `http.api_token_file`, else none (the API is then disabled).
     pub fn api_token(
@@ -478,6 +504,22 @@ impl Config {
                 return Err(invalid(
                     "local.records",
                     format!("{:?} is not a domain of at least two labels", record.name),
+                ));
+            }
+        }
+        let mut forwarded = HashSet::new();
+        for rule in &self.forward {
+            if !is_valid_name(&rule.domain) {
+                return Err(invalid(
+                    "forward",
+                    format!("{:?} is not a domain", rule.domain),
+                ));
+            }
+            let domain = rule.domain.strip_suffix('.').unwrap_or(&rule.domain);
+            if !forwarded.insert(domain.to_ascii_lowercase()) {
+                return Err(invalid(
+                    "forward",
+                    format!("{:?} is given twice", rule.domain),
                 ));
             }
         }
@@ -771,6 +813,125 @@ mod tests {
 
         assert!(error.contains("allow"), "{error}");
         assert!(error.contains("not a domain"), "{error}");
+    }
+
+    mod forward {
+        use std::net::SocketAddr;
+        use std::time::Duration;
+
+        use super::*;
+
+        fn addr(text: &str) -> SocketAddr {
+            text.parse().unwrap()
+        }
+
+        /// The address each name is forwarded to.
+        fn routes(config: &Config) -> Forwards<SocketAddr> {
+            config.forwards(|server, _| server)
+        }
+
+        #[test]
+        fn rules_come_from_forward_tables() {
+            let config = Config::from_toml(
+                "[[forward]]\ndomain = 'home.arpa'\nserver = '192.168.1.1'\n\
+                 [[forward]]\ndomain = '1.168.192.in-addr.arpa'\nserver = '[fd00::1]:5353'",
+            )
+            .unwrap();
+
+            let forwards = routes(&config);
+            assert_eq!(forwards.len(), 2);
+            assert_eq!(
+                forwards.route("nas.home.arpa."),
+                Some(&addr("192.168.1.1:53"))
+            );
+            assert_eq!(
+                forwards.route("10.1.168.192.in-addr.arpa."),
+                Some(&addr("[fd00::1]:5353"))
+            );
+        }
+
+        #[test]
+        fn servers_use_the_upstream_timeout() {
+            let config = Config::from_toml(
+                "[upstream]\ntimeout = '700ms'\n\
+                 [[forward]]\ndomain = 'home.arpa'\nserver = '192.168.1.1'",
+            )
+            .unwrap();
+
+            let forwards = config.forwards(|_, timeout| timeout);
+            assert_eq!(
+                forwards.route("home.arpa."),
+                Some(&Duration::from_millis(700))
+            );
+        }
+
+        #[test]
+        fn no_forward_table_forwards_nothing() {
+            let config = Config::from_toml("").unwrap();
+
+            assert!(routes(&config).is_empty());
+        }
+
+        // ADR 0017: DHCP domains such as `lan` have one label.
+        #[test]
+        fn single_label_domain_is_accepted() {
+            let config =
+                Config::from_toml("[[forward]]\ndomain = 'lan'\nserver = '192.168.1.1'").unwrap();
+
+            assert_eq!(
+                routes(&config).route("printer.lan."),
+                Some(&addr("192.168.1.1:53"))
+            );
+        }
+
+        #[test]
+        fn invalid_domain_is_rejected_and_named() {
+            let error = invalid("[[forward]]\ndomain = 'not a name'\nserver = '192.168.1.1'");
+
+            assert!(error.contains("forward"), "{error}");
+            assert!(error.contains("\"not a name\""), "{error}");
+        }
+
+        // The root would forward everything: that is `upstream.server`.
+        #[test]
+        fn root_domain_is_rejected() {
+            for root in [".", ""] {
+                let error = invalid(&format!(
+                    "[[forward]]\ndomain = '{root}'\nserver = '192.168.1.1'"
+                ));
+
+                assert!(error.contains("forward"), "{root:?}: {error}");
+                assert!(error.contains(&format!("{root:?}")), "{root:?}: {error}");
+            }
+        }
+
+        // ADR 0017: which server wins is never a matter of order.
+        #[test]
+        fn domain_given_twice_is_rejected() {
+            let error = invalid(
+                "[[forward]]\ndomain = 'home.arpa'\nserver = '192.168.1.1'\n\
+                 [[forward]]\ndomain = 'HOME.arpa.'\nserver = '192.168.1.2'",
+            );
+
+            assert!(error.contains("forward"), "{error}");
+            assert!(error.contains("\"HOME.arpa.\" is given twice"), "{error}");
+        }
+
+        #[test]
+        fn invalid_server_is_rejected_with_its_position() {
+            let error = invalid("[[forward]]\ndomain = 'home.arpa'\nserver = 'router'");
+
+            assert!(error.contains("line 3"), "{error}");
+            assert!(error.contains("router"), "{error}");
+        }
+
+        #[test]
+        fn unknown_field_is_rejected() {
+            let error =
+                invalid("[[forward]]\ndomain = 'home.arpa'\nserver = '192.168.1.1'\nservers = []");
+
+            assert!(error.contains("servers"), "{error}");
+        }
     }
 
     mod local {

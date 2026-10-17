@@ -4,6 +4,7 @@ pub mod blocking;
 pub mod cache;
 pub mod config;
 pub mod filter;
+pub mod forward;
 pub mod handler;
 pub mod http;
 pub mod lists;

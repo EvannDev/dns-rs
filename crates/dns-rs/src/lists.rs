@@ -143,10 +143,15 @@ fn is_address(token: &str) -> bool {
 
 /// At least two labels of letters, digits, `-` or `_`, within DNS limits.
 pub(crate) fn is_valid_domain(domain: &str) -> bool {
-    let domain = domain.strip_suffix('.').unwrap_or(domain);
-    domain.len() <= MAX_DOMAIN_LEN
-        && domain.contains('.')
-        && domain.split('.').all(|label| {
+    domain.strip_suffix('.').unwrap_or(domain).contains('.') && is_valid_name(domain)
+}
+
+/// One or more labels of letters, digits, `-` or `_`, within DNS limits;
+/// not the root.
+pub(crate) fn is_valid_name(name: &str) -> bool {
+    let name = name.strip_suffix('.').unwrap_or(name);
+    name.len() <= MAX_DOMAIN_LEN
+        && name.split('.').all(|label| {
             (1..=MAX_LABEL_LEN).contains(&label.len())
                 && label
                     .bytes()
