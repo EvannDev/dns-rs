@@ -42,6 +42,12 @@ All notable changes to dns-rs are documented here. The format is based on
   matched, each with its kind, text and origin (`config:deny`, `config:allow`,
   `config:deny_regex`, `config:allow_regex` or the list label). Invalid names
   get `400` (#18).
+- The API (`/api/*`) requires `Authorization: Bearer <token>` (scheme
+  case-insensitive). The token comes from `DNS_RS_API_TOKEN` or from the file
+  named by `http.api_token_file` (restart-only); the variable wins. It must
+  have at least 16 characters and is validated at startup. Without a token
+  the API is disabled and answers `403`; a missing or wrong token gets `401`.
+  `/healthz`, `/readyz` and `/metrics` stay open (#19).
 
 ### Changed
 

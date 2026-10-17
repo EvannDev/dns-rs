@@ -9,7 +9,7 @@ use common::{query, start_server, udp_exchange};
 use std::time::Duration;
 
 use dns_rs::cache::DnsCache;
-use dns_rs::config::Config;
+use dns_rs::config::{ApiToken, Config};
 use dns_rs::handler::Handler;
 use dns_rs::http::{HttpState, serve_http};
 use dns_rs::metrics::Metrics;
@@ -29,10 +29,26 @@ fn policy() -> Arc<Handler<DnsUpstream>> {
     handler
 }
 
+const TOKEN: &str = "test-token-0123456789";
+
+fn api_token(token: &str) -> ApiToken {
+    Config::default()
+        .api_token(|var: &str| (var == "DNS_RS_API_TOKEN").then(|| token.to_owned()))
+        .unwrap()
+        .unwrap()
+}
+
 async fn start_http(metrics: Arc<Metrics>) -> (SocketAddr, HttpState) {
+    start_http_with(metrics, Some(api_token(TOKEN))).await
+}
+
+async fn start_http_with(
+    metrics: Arc<Metrics>,
+    token: Option<ApiToken>,
+) -> (SocketAddr, HttpState) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let state = HttpState::new(metrics, policy());
+    let state = HttpState::new(metrics, policy(), token);
     tokio::spawn(serve_http(listener, state.clone()));
     (addr, state)
 }
@@ -126,8 +142,17 @@ async fn malformed_queries_show_up_in_metrics() {
     );
 }
 
+async fn api_get(addr: SocketAddr, path: &str, authorization: Option<&str>) -> reqwest::Response {
+    let mut request = reqwest::Client::new().get(format!("http://{addr}{path}"));
+    if let Some(value) = authorization {
+        request = request.header("authorization", value);
+    }
+    request.send().await.unwrap()
+}
+
 async fn check(addr: SocketAddr, domain: &str) -> (u16, serde_json::Value) {
-    let response = get(addr, &format!("/api/v1/check/{domain}")).await;
+    let path = format!("/api/v1/check/{domain}");
+    let response = api_get(addr, &path, Some(&format!("Bearer {TOKEN}"))).await;
     let status = response.status().as_u16();
     let body = response.text().await.unwrap();
     (
@@ -188,4 +213,85 @@ async fn check_of_an_invalid_name_is_a_bad_request() {
         assert_eq!(status, 400, "{name}");
         assert!(body["error"].is_string(), "{name}: {body}");
     }
+}
+
+// Without a token configured, the API must not be reachable at all.
+#[tokio::test]
+async fn api_is_disabled_without_a_token() {
+    let (addr, _state) = start_http_with(Arc::new(Metrics::new()), None).await;
+
+    let response = api_get(addr, "/api/v1/check/example.com", Some("Bearer anything")).await;
+
+    assert_eq!(response.status(), 403);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert!(
+        body["error"].as_str().unwrap().contains("DNS_RS_API_TOKEN"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn api_request_without_token_is_unauthorized() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    let response = api_get(addr, "/api/v1/check/example.com", None).await;
+
+    assert_eq!(response.status(), 401);
+    assert_eq!(response.headers()["www-authenticate"], "Bearer");
+}
+
+#[tokio::test]
+async fn api_request_with_a_wrong_token_is_unauthorized() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    for authorization in [
+        "Bearer wrong-token-0123456789",
+        &format!("Basic {TOKEN}"),
+        TOKEN,
+    ] {
+        let response = api_get(addr, "/api/v1/check/example.com", Some(authorization)).await;
+
+        assert_eq!(response.status(), 401, "{authorization}");
+    }
+}
+
+// RFC 6750 and RFC 9110: the scheme name is case-insensitive.
+#[tokio::test]
+async fn bearer_scheme_is_case_insensitive() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    let response = api_get(
+        addr,
+        "/api/v1/check/example.com",
+        Some(&format!("bearer {TOKEN}")),
+    )
+    .await;
+
+    assert_eq!(response.status(), 200);
+}
+
+// Kubelet probes and Prometheus scrapes carry no token.
+#[tokio::test]
+async fn probes_and_metrics_need_no_token() {
+    let (addr, state) = start_http(Arc::new(Metrics::new())).await;
+    state.set_ready();
+
+    for path in ["/healthz", "/readyz", "/metrics"] {
+        assert_eq!(get(addr, path).await.status(), 200, "{path}");
+    }
+}
+
+// The whole /api prefix is protected, so an endpoint added later cannot be
+// left open by mistake, and unknown paths reveal nothing without a token.
+#[tokio::test]
+async fn whole_api_prefix_requires_the_token() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    let without = api_get(addr, "/api/v1/unknown", None).await.status();
+    let with = api_get(addr, "/api/v1/unknown", Some(&format!("Bearer {TOKEN}")))
+        .await
+        .status();
+
+    assert_eq!(without, 401);
+    assert_eq!(with, 404);
 }
