@@ -1204,6 +1204,24 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn changed_ttl_alone_applies_without_a_restart() {
+            let setup = Setup::new();
+            setup.config(NAS);
+            let (mut reloader, handler) = setup.reloader().await;
+
+            setup.config(&format!("{NAS}\nttl = 60"));
+            reloader.reload_config().await;
+
+            let mut request = Message::new(1, MessageType::Query, OpCode::Query);
+            request.add_query(Query::query(
+                Name::from_ascii("nas.home.arpa.").unwrap(),
+                RecordType::A,
+            ));
+            let response = handler.handle(&request).await.response;
+            assert_eq!(response.answers[0].ttl, 60);
+        }
+
+        #[tokio::test]
         async fn invalid_records_keep_the_previous_ones() {
             let setup = Setup::new();
             setup.config(NAS);
