@@ -1,0 +1,14 @@
+# End-to-end test in kind (.github/scripts/e2e-kind.sh): the image built
+# by CI, two replicas, a deny rule. The script sets upstream.server to the
+# cluster's own DNS, so no query leaves the cluster.
+replicaCount: 2
+image:
+  repository: dns-rs
+  tag: e2e
+  pullPolicy: Never
+config: |
+  [blocking]
+  mode = "null"
+  deny = ["blocked.e2e.test"]
+tests:
+  query: kubernetes.default.svc.cluster.local
