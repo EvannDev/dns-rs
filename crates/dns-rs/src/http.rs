@@ -18,12 +18,14 @@ use crate::config::ApiToken;
 use crate::filter::{Match, Verdict};
 use crate::handler::PolicyView;
 use crate::metrics::Metrics;
+use crate::status::{Status, StatusReport};
 
 /// What the endpoint serves, shared with the rest of dns-rs.
 #[derive(Clone)]
 pub struct HttpState {
     metrics: Arc<Metrics>,
     policy: Arc<dyn PolicyView>,
+    status: Arc<Status>,
     api_token: Option<ApiToken>,
     ready: Arc<AtomicBool>,
 }
@@ -35,11 +37,13 @@ impl HttpState {
     pub fn new(
         metrics: Arc<Metrics>,
         policy: Arc<dyn PolicyView>,
+        status: Arc<Status>,
         api_token: Option<ApiToken>,
     ) -> Self {
         Self {
             metrics,
             policy,
+            status,
             api_token,
             ready: Arc::new(AtomicBool::new(false)),
         }
@@ -60,6 +64,7 @@ pub async fn serve_http(listener: TcpListener, state: HttpState) -> io::Result<(
     // nothing without the token.
     let api = Router::new()
         .route("/v1/check/{domain}", get(check))
+        .route("/v1/status", get(status))
         .fallback(api_not_found)
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
     let router = Router::new()
@@ -84,6 +89,11 @@ struct CheckResponse {
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+/// The state of this replica: policy, configuration, cache and lists.
+async fn status(State(state): State<HttpState>) -> Json<StatusReport> {
+    Json(state.status.report())
 }
 
 /// Whether `domain` is blocked by the policy in force, and by which rule.

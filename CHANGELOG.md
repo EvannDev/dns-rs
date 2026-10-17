@@ -48,6 +48,11 @@ All notable changes to dns-rs are documented here. The format is based on
   have at least 16 characters and is validated at startup. Without a token
   the API is disabled and answers `403`; a missing or wrong token gets `401`.
   `/healthz`, `/readyz` and `/metrics` stay open (#19).
+- `GET /api/v1/status` reports the replica state as JSON: version, blocking
+  mode and rule count, configuration validity, cache entries and, for each
+  configured list, its label, rules, last success and last failure. A failure
+  shows its reason (and HTTP status) but never the error message, which may
+  contain a list URL token. Requires the API token (#20).
 
 ### Changed
 

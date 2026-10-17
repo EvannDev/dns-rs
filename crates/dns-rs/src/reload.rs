@@ -14,7 +14,8 @@ use crate::config::ListConfig;
 use crate::config::{BlockingConfig, Config, ConfigError};
 use crate::handler::Handler;
 use crate::metrics::{Metrics, ReloadResult};
-use crate::sources::{ListLoader, ListResult, ListStore};
+use crate::sources::{FetchError, ListLoader, ListResult, ListStore};
+use crate::status::Status;
 use crate::upstream::Upstream;
 
 /// What a configuration reload did.
@@ -39,6 +40,7 @@ type Lookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 pub struct Reloader<U> {
     handler: Arc<Handler<U>>,
     metrics: Arc<Metrics>,
+    status: Arc<Status>,
     loader: ListLoader,
     lookup: Lookup,
     /// In force: restart-only settings keep their startup values.
@@ -56,19 +58,22 @@ impl<U: Upstream> Reloader<U> {
     pub async fn start(
         handler: Arc<Handler<U>>,
         metrics: Arc<Metrics>,
+        status: Arc<Status>,
         loader: ListLoader,
         config: Config,
         lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
     ) -> Result<Self, ConfigError> {
         let mut store = ListStore::default();
+        status.set_lists(&config.blocking.lists);
         let results = loader.load_each(&config.blocking.lists).await;
-        record_lists(&metrics, &results);
+        record_lists(&metrics, &status, &outcomes(&results));
         store.update(results);
         let policy = build_policy(&config.blocking, &store).await?;
-        install(&handler, &metrics, policy);
+        install(&handler, &metrics, &status, policy);
         Ok(Self {
             handler,
             metrics,
+            status,
             loader,
             lookup: Box::new(lookup),
             active: config.clone(),
@@ -93,6 +98,7 @@ impl<U: Upstream> Reloader<U> {
         self.last_rejection = None;
         // Valid again, even if identical to the last configuration seen.
         self.metrics.set_config_valid(true);
+        self.status.set_config_valid(true);
         if next == self.last_seen {
             return ConfigChange::Unchanged;
         }
@@ -113,17 +119,19 @@ impl<U: Upstream> Reloader<U> {
             let mut store = self.store.clone();
             store.retain(&next.blocking.lists);
             let missing = store.missing(&next.blocking.lists);
+            let mut loaded = Vec::new();
             if !missing.is_empty() {
                 let results = self.loader.load_each(&missing).await;
-                // Recorded now, before the policy is built: if the build
-                // failed, these series would describe lists not in force,
-                // but validation leaves no known cause for that failure.
-                record_lists(&self.metrics, &results);
+                loaded = outcomes(&results);
                 store.update(results);
             }
             match build_policy(&next.blocking, &store).await {
                 Ok(policy) => {
-                    install(&self.handler, &self.metrics, policy);
+                    // Metrics and status describe the new lists only once
+                    // they are in force.
+                    self.status.set_lists(&next.blocking.lists);
+                    record_lists(&self.metrics, &self.status, &loaded);
+                    install(&self.handler, &self.metrics, &self.status, policy);
                     self.store = store;
                 }
                 Err(error) => return self.reject(error.to_string()),
@@ -150,10 +158,10 @@ impl<U: Upstream> Reloader<U> {
     /// last valid version.
     pub async fn refresh_lists(&mut self) {
         let results = self.loader.load_each(&self.active.blocking.lists).await;
-        record_lists(&self.metrics, &results);
+        record_lists(&self.metrics, &self.status, &outcomes(&results));
         self.store.update(results);
         match build_policy(&self.active.blocking, &self.store).await {
-            Ok(policy) => install(&self.handler, &self.metrics, policy),
+            Ok(policy) => install(&self.handler, &self.metrics, &self.status, policy),
             Err(error) => {
                 tracing::error!(%error, "cannot rebuild the blocking policy, keeping the previous one");
             }
@@ -197,6 +205,7 @@ impl<U: Upstream> Reloader<U> {
 
     fn reject(&mut self, reason: String) -> ConfigChange {
         self.metrics.set_config_valid(false);
+        self.status.set_config_valid(false);
         if self.last_rejection.as_ref() != Some(&reason) {
             tracing::error!(error = %reason, "configuration rejected, keeping the previous one");
             self.metrics.record_config_reload(ReloadResult::Rejected);
@@ -206,18 +215,42 @@ impl<U: Upstream> Reloader<U> {
     }
 }
 
-fn install<U: Upstream>(handler: &Handler<U>, metrics: &Metrics, policy: Policy) {
+fn install<U: Upstream>(handler: &Handler<U>, metrics: &Metrics, status: &Status, policy: Policy) {
     metrics.set_blocking_rules(policy.filter.deny_count());
+    status.set_policy(policy.mode, policy.filter.deny_count());
     handler.set_policy(policy);
 }
 
-fn record_lists(metrics: &Metrics, results: &[(ListConfig, ListResult)]) {
-    for (config, result) in results {
-        match result {
-            Ok(list) => {
-                metrics.record_list_loaded(&config.source, list.deny.len());
+/// What metrics and status need from load results: rule counts or errors,
+/// without the lists themselves (cheap to keep until the policy is built).
+type Outcome = (ListConfig, Result<usize, FetchError>);
+
+fn outcomes(results: &[(ListConfig, ListResult)]) -> Vec<Outcome> {
+    results
+        .iter()
+        .map(|(config, result)| {
+            (
+                config.clone(),
+                result
+                    .as_ref()
+                    .map(|list| list.deny.len())
+                    .map_err(Clone::clone),
+            )
+        })
+        .collect()
+}
+
+fn record_lists(metrics: &Metrics, status: &Status, outcomes: &[Outcome]) {
+    for (config, outcome) in outcomes {
+        match outcome {
+            Ok(rules) => {
+                metrics.record_list_loaded(&config.source, *rules);
+                status.list_loaded(config, *rules);
             }
-            Err(error) => metrics.record_list_failed(&config.source, error),
+            Err(error) => {
+                metrics.record_list_failed(&config.source, error);
+                status.list_failed(config, error);
+            }
         }
     }
 }
@@ -270,6 +303,7 @@ mod tests {
     struct Setup {
         dir: tempfile::TempDir,
         metrics: Arc<Metrics>,
+        status: Arc<Status>,
     }
 
     impl Setup {
@@ -278,6 +312,10 @@ mod tests {
                 dir: tempfile::tempdir().unwrap(),
                 metrics: Arc::new(
                     Metrics::new()
+                        .with_clock(|| SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+                ),
+                status: Arc::new(
+                    Status::new()
                         .with_clock(|| SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
                 ),
             }
@@ -311,6 +349,7 @@ mod tests {
             let reloader = Reloader::start(
                 Arc::clone(&handler),
                 Arc::clone(&self.metrics),
+                Arc::clone(&self.status),
                 loader,
                 config,
                 lookup,
@@ -794,6 +833,97 @@ mod tests {
 
             assert_eq!(change, ConfigChange::Unchanged);
             assert!(has(&setup, "dns_rs_config_valid 1"), "{}", text(&setup));
+        }
+    }
+
+    mod status {
+        use super::*;
+        use crate::blocking::BlockingMode;
+        use crate::status::ListFailure;
+
+        #[tokio::test]
+        async fn start_reports_policy_and_lists() {
+            let setup = Setup::new();
+            setup.write("list.txt", "a.example.com\nb.example.com\n");
+            setup.config(&format!(
+                "[blocking]\nmode = 'refused'\ndeny = ['c.example.com']\nlists = ['{}']",
+                setup.list_url("list.txt")
+            ));
+
+            let _reloader = setup.reloader().await;
+
+            let report = setup.status.report();
+            assert_eq!(report.blocking.rules, 3);
+            assert_eq!(report.blocking.mode, BlockingMode::Refused);
+            assert_eq!(report.lists.len(), 1);
+            assert_eq!(report.lists[0].list, setup.list_url("list.txt"));
+            assert_eq!(report.lists[0].rules, Some(2));
+            assert_eq!(report.lists[0].last_success, Some(1_700_000_000));
+        }
+
+        #[tokio::test]
+        async fn failed_refresh_is_reported_next_to_the_last_success() {
+            let setup = Setup::new();
+            setup.write("list.txt", "a.example.com\n");
+            setup.config(&format!(
+                "[blocking]\nlists = ['{}']",
+                setup.list_url("list.txt")
+            ));
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            remove(&setup.path("list.txt"));
+            reloader.refresh_lists().await;
+
+            let entry = &setup.status.report().lists[0];
+            assert_eq!(entry.rules, Some(1));
+            assert_eq!(
+                entry.last_failure,
+                Some(ListFailure {
+                    reason: "failed",
+                    http_status: None,
+                    at: 1_700_000_000
+                })
+            );
+        }
+
+        #[tokio::test]
+        async fn reload_reports_the_new_lists() {
+            let setup = Setup::new();
+            setup.write("a.txt", "a.example.com\n");
+            setup.write("b.txt", "b.example.com\n");
+            setup.config(&format!(
+                "[blocking]\nlists = ['{}']",
+                setup.list_url("a.txt")
+            ));
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            setup.config(&format!(
+                "[blocking]\nlists = ['{}']",
+                setup.list_url("b.txt")
+            ));
+            reloader.reload_config().await;
+
+            let report = setup.status.report();
+            assert_eq!(report.lists.len(), 1);
+            assert_eq!(report.lists[0].list, setup.list_url("b.txt"));
+            assert_eq!(report.lists[0].rules, Some(1));
+            assert_eq!(report.blocking.rules, 1);
+        }
+
+        #[tokio::test]
+        async fn invalid_config_is_reported_until_fixed() {
+            let setup = Setup::new();
+            setup.config("[blocking]\ndeny = ['a.example.com']");
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            setup.config("[blocking]\ndenny = []");
+            reloader.reload_config().await;
+            let broken = setup.status.report().config.valid;
+            setup.config("[blocking]\ndeny = ['a.example.com']");
+            reloader.reload_config().await;
+
+            assert!(!broken);
+            assert!(setup.status.report().config.valid);
         }
     }
 }

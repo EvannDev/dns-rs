@@ -16,6 +16,7 @@ your blocking rules and requires a token (see [Authentication](#authentication))
 | `/readyz` | `200` with `ready` once the DNS sockets are bound and the first blocking policy is installed; `503` with `starting` before that (readiness) |
 | `/metrics` | Metrics in the OpenMetrics text format (`application/openmetrics-text; version=1.0.0; charset=utf-8`) |
 | `/api/v1/check/{domain}` | JSON explanation of the blocking decision for a domain (see [Check API](#check-api)) |
+| `/api/v1/status` | JSON state of the replica: policy, configuration, cache and blocklists (see [Status API](#status-api)) |
 
 ## Authentication
 
@@ -136,6 +137,49 @@ The name is lowercased and a trailing dot is ignored. A name that a client
 could not query (characters other than letters, digits, `-` and `_`, an empty
 label, a label over 63 bytes, or a name over 253 bytes) gets `400` with
 `{"error":"..."}`.
+
+## Status API
+
+`GET /api/v1/status` (token required) reports the state of this replica: the
+blocking policy in force, whether the configuration file is valid, the cache
+size and the configured blocklists. It reads state the reloader already
+keeps; nothing is fetched.
+
+```
+GET /api/v1/status
+{"version":"0.1.0","blocking":{"mode":"null","rules":3},"config":{"valid":true},"cache":{"entries":1},
+ "lists":[{"list":"file:///etc/dns-rs/mine.txt","wildcard":false,"rules":2,"last_success":1792195792,"last_failure":null},
+          {"list":"https://example.invalid/private.txt#3a1c6aac","wildcard":false,"rules":null,"last_success":null,
+           "last_failure":{"reason":"failed","at":1792195792}}]}
+```
+
+| Field | Meaning |
+|---|---|
+| `version` | The dns-rs version |
+| `blocking.mode` | The configured `blocking.mode`: `null`, `nxdomain`, `nodata` or `refused` |
+| `blocking.rules` | Deny rules in the blocking policy in force |
+| `config.valid` | `true` while the configuration file, as last read, is valid (same meaning as `dns_rs_config_valid`) |
+| `cache.entries` | Responses held in the cache, read at each request |
+| `lists` | The configured blocklists, in configuration order |
+
+Each entry of `lists` has:
+
+- `list`: the list label, the same as the `list` metric label (credentials,
+  query string and fragment removed, with a fingerprint when something was
+  removed).
+- `wildcard`: whether the bare domains of the list also block their
+  subdomains.
+- `rules`: deny rules from the last successful load, or `null` if the list
+  never loaded.
+- `last_success`: Unix time of the last successful load, or `null`.
+- `last_failure`: the last failure if it happened after the last success,
+  otherwise `null`. It has `reason` (`timeout`, `too_large`, `status` or
+  `failed`), `at` (Unix time) and, for `status` failures, `http_status`.
+
+A failure reports its reason only, never the error message, because HTTP
+errors embed the full list URL, which may hold a token. A list keeps its
+history across reloads while it stays in the configuration; a list removed
+from the configuration disappears from the report.
 
 ## Prometheus and Kubernetes
 

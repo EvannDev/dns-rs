@@ -9,6 +9,7 @@ use dns_rs::metrics::Metrics;
 use dns_rs::reload::{CONFIG_POLL_INTERVAL, Reloader};
 use dns_rs::server::{serve_tcp, serve_udp};
 use dns_rs::sources::{Limits, ListLoader};
+use dns_rs::status::Status;
 use dns_rs::upstream::DnsUpstream;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc;
@@ -32,6 +33,9 @@ async fn main() -> anyhow::Result<()> {
     let cache_owner = Arc::clone(&handler);
     metrics.register_cache_entries(move || cache_owner.cached_responses());
     let metrics = Arc::new(metrics);
+    let status_cache = Arc::clone(&handler);
+    let status =
+        Arc::new(Status::new().with_cache_entries(move || status_cache.cached_responses()));
 
     // Fail fast: a TLS stack that cannot start means a broken environment,
     // even if no list is fetched over HTTPS today.
@@ -39,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let reloader = Reloader::start(
         Arc::clone(&handler),
         Arc::clone(&metrics),
+        Arc::clone(&status),
         loader,
         config.clone(),
         |var| std::env::var(var).ok(),
@@ -61,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     let http = TcpListener::bind(http_listen)
         .await
         .with_context(|| format!("binding HTTP {http_listen}"))?;
-    let http_state = HttpState::new(Arc::clone(&metrics), handler.clone(), api_token);
+    let http_state = HttpState::new(Arc::clone(&metrics), handler.clone(), status, api_token);
     // Ready means: DNS sockets bound and first policy installed (by
     // Reloader::start above). Queries arriving before the servers are first
     // polled wait in the kernel's socket queues; none is lost.
