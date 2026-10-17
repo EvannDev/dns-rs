@@ -9,8 +9,7 @@ helm install dns-rs oci://ghcr.io/evanndev/charts/dns-rs --version 0.1.0 \
   --namespace dns --create-namespace
 ```
 
-Replace `0.1.0` with the version you want. The package on GHCR may be private
-until its owner makes it public. To install the development version, use a
+Replace `0.1.0` with the version you want. To install the development version, use a
 checkout of the repository instead:
 
 ```sh

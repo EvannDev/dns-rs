@@ -77,8 +77,7 @@ config: |
 ```
 
 Apply it with `-f values.yaml`. The chart runs two replicas behind a Service
-on port 53, with probes, a PodDisruptionBudget and `helm test`. The package
-on GHCR may be private until its owner makes it public. See
+on port 53, with probes, a PodDisruptionBudget and `helm test`. See
 [Kubernetes](kubernetes.md) for the values, the client-IP setup and the API
 token.
 
