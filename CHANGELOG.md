@@ -14,6 +14,17 @@ All notable changes to dns-rs are documented here. The format is based on
   source `local` in the query log and metrics. `[local]` applies on reload
   without a restart, and the Helm chart accepts it in `config` (#30,
   [ADR 0016](docs/adr/0016-local-records.md)).
+- Conditional forwarding: a `[[forward]]` table with `domain` and `server`
+  (port 53 unless given) sends a domain and every name under it to its own
+  server instead of the upstream. Matching is label by label and
+  case-insensitive, and the longest domain wins. Local records and blocking
+  still come first. A server that fails gives SERVFAIL, never a retry on the
+  upstream. Domains that are invalid, the root, or given twice are rejected.
+  `[[forward]]` applies on reload and empties the cache. Forwarded answers
+  have the source `forwarded` in the query log and metrics, and a
+  `forwarded domains loaded` log line reports the count. The Helm chart
+  accepts `[[forward]]` in `config` (#31,
+  [ADR 0017](docs/adr/0017-conditional-forwarding.md)).
 
 ## [0.1.0] - 2026-10-17
 

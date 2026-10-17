@@ -6,7 +6,7 @@ run in a container and scale as stateless replicas.
 > Status: caching DNS forwarder with blocking (blocklists over HTTPS or from
 > files, allow/deny rules, regexes) that reloads its configuration and
 > refreshes blocklists while running. It serves Prometheus metrics and Kubernetes probes over HTTP.
-> It also answers local records (`[local]`).
+> It also answers local records (`[local]`) and forwards chosen domains to their own server (`[[forward]]`).
 > Next: more metrics, a REST API.
 
 ## Run
@@ -56,11 +56,23 @@ records = [{ name = "nas.home.arpa", ip = "192.168.1.10" }]
 
 See [Configuration](docs/configuration.md#local-records).
 
+## Conditional forwarding
+
+Send a domain, and the names under it, to its own server with `[[forward]]`:
+
+```toml
+[[forward]]
+domain = "home.arpa"
+server = "192.168.1.1"
+```
+
+See [Configuration](docs/configuration.md#conditional-forwarding).
+
 ## Reload without restart
 
 dns-rs reads the configuration file every 10 seconds (by content, so a
 Kubernetes ConfigMap update counts as an edit) and immediately on `SIGHUP`.
-Changes to `[blocking]` and `[local]` apply at once. `server.listen`, `http.listen`, `http.api_token_file`, `upstream.server`,
+Changes to `[blocking]`, `[local]` and `[[forward]]` apply at once. `server.listen`, `http.listen`, `http.api_token_file`, `upstream.server`,
 `upstream.timeout` and `cache.size` need a restart: dns-rs logs
 "configuration changes need a restart to apply" once and keeps the running
 values. An invalid or missing file is rejected (logged once) and the previous

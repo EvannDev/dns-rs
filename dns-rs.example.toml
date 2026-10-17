@@ -96,3 +96,16 @@ allow_regex = []
 #   { name = "nas.home.arpa", ip = "fd00::10" },
 # ]
 records = []
+
+# Conditional forwarding: a domain, and every name under it, goes to its own
+# server instead of upstream.server. Applies on reload, no restart needed.
+#
+# Matching is label by label, without regard to case; the longest domain
+# wins. A domain may have one label (`lan`), the root is not allowed, and a
+# domain may appear only once. Local records and blocking still come first.
+# If the server fails, the client gets SERVFAIL: the upstream is never tried.
+# Changing the rules empties the cache. The port defaults to 53.
+# Example (default: none):
+# [[forward]]
+# domain = "home.arpa"
+# server = "192.168.1.1"
