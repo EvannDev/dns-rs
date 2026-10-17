@@ -42,6 +42,7 @@ contradicting them.
 | Review (`.github/workflows/claude-review.yml`) | Every PR | Reviews against these rules |
 | `docs` (`.claude/agents/docs.md`) | Every PR, weekly | Owns and commits the documentation |
 | `rust-refactor` (`.claude/agents/rust-refactor.md`) | On demand, locally | Behaviour-preserving refactoring audits and implementations; never commits |
+| `devops` (`.claude/agents/devops.md`) | On demand, locally | CI workflows, container image, Helm chart, kind checks; kind contexts only, never publishes or commits |
 
 ## Architecture
 
