@@ -5,6 +5,8 @@ All notable changes to dns-rs are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-17
+
 ### Added
 
 - Caching DNS forwarder over UDP and TCP, a query log (target
@@ -94,3 +96,6 @@ All notable changes to dns-rs are documented here. The format is based on
 - `blocking.deny_regex` and `blocking.allow_regex` are also validated as a
   whole: a list whose patterns compile alone but are too large together is
   rejected at startup or on reload, naming the key (#13).
+
+[Unreleased]: https://github.com/EvannDev/dns-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/EvannDev/dns-rs/releases/tag/v0.1.0
