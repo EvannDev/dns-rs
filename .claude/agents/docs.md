@@ -67,8 +67,12 @@ comment instead of "fixing" either side.
 
 ### On a pull request
 
-1. Read the PR description and the diff against the base branch
-   (`gh pr diff`, `git log base..HEAD`).
+1. Read the PR description, then the changes of your MODE:
+   - `full`: the diff against the base branch (`gh pr diff`,
+     `git log base..HEAD`);
+   - `incremental`: an earlier run documented the PR up to the start of
+     RANGE; read only `git log RANGE` and `git diff RANGE`, and the
+     documentation those commits touch.
 2. Decide what documentation the change requires: changelog entry (for any
    user-visible change), reference docs, example config, README, ADR,
    rustdoc of new public items. Documentation-only and CI-only PRs usually

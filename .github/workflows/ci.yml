@@ -50,6 +50,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: .claude/hooks/test-rust-refactor-guard.sh
       - run: .claude/hooks/test-devops-guard.sh
+      - run: .github/scripts/test-claude-mode.sh
 
   image:
     runs-on: ubuntu-latest

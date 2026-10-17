@@ -1,11 +1,9 @@
 name: Claude docs
 
 # The docs agent (.claude/agents/docs.md) keeps the documentation true to
-# the code: on each PR it commits the documentation the change needs, and
-# weekly (or on demand) it audits everything and opens a PR.
+# the code: weekly (or on demand) it audits everything and opens a PR. On
+# pull requests it runs in claude-pr.yml, before the review.
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
   schedule:
     - cron: "0 6 * * 1" # Mondays, 06:00 UTC
   workflow_dispatch:
@@ -15,22 +13,12 @@ on:
         required: false
 
 concurrency:
-  group: claude-docs-${{ github.event.pull_request.number || github.ref }}
+  group: claude-docs-${{ github.ref }}
   # Never kill the agent between its commit and its push.
   cancel-in-progress: false
 
 jobs:
   docs:
-    # On PRs: skip drafts, forks (no secrets), Dependabot, the agent's own
-    # pushes (loop guard) and the agent's own follow-up branches.
-    if: >-
-      github.event_name != 'pull_request' || (
-        !github.event.pull_request.draft &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        github.actor != 'dependabot[bot]' &&
-        github.event.sender.login != 'claude[bot]' &&
-        !startsWith(github.event.pull_request.head.ref, 'docs/agent-')
-      )
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -40,8 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # On PRs, the branch itself (not the merge ref) so commits can be pushed.
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
           fetch-depth: 0
           # Do not keep GITHUB_TOKEN in git config: checkout stores it as an
           # Authorization header that overrides the Claude app token, so the
@@ -59,20 +45,17 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # The agent's report goes to the job summary, so a run that changes
-          # nothing still says why. Inputs come only from people with write
-          # access (forks are skipped above).
+          # nothing still says why. Only people with write access can start
+          # this workflow.
           display_report: true
           prompt: |
             REPO: ${{ github.repository }}
             EVENT: ${{ github.event_name }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
-            PR BASE: ${{ github.event.pull_request.base.ref }}
             TASK: ${{ inputs.task }}
 
             Read .claude/agents/docs.md: it defines your role, what you own,
             your accuracy rules and your procedures. Follow it exactly.
 
-            - EVENT pull_request: apply "On a pull request" to PR NUMBER.
             - EVENT schedule, or workflow_dispatch with an empty TASK: apply
               "On an audit".
             - EVENT workflow_dispatch with a TASK: do that TASK, following
@@ -80,4 +63,6 @@ jobs:
 
             Today is the date given by `date -u +%F`.
           claude_args: |
+            --model claude-sonnet-5-5
+            --max-turns 40
             --allowedTools "Read,Glob,Grep,Edit,Write,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git switch:*),Bash(git checkout:*),Bash(git fetch:*),Bash(git cherry-pick:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr create:*),Bash(gh pr comment:*),Bash(cargo test:*),Bash(cargo doc:*),Bash(date:*)"
