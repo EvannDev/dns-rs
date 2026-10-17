@@ -37,7 +37,7 @@ impl Default for Limits {
 /// Redirects followed at most, like browsers' lower bound.
 pub const MAX_REDIRECTS: usize = 5;
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum FetchError {
     #[error("timed out")]
     Timeout,

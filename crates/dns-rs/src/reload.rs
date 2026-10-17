@@ -14,7 +14,7 @@ use crate::config::ListConfig;
 use crate::config::{BlockingConfig, Config, ConfigError};
 use crate::handler::Handler;
 use crate::metrics::{Metrics, ReloadResult};
-use crate::sources::{ListLoader, ListResult, ListStore};
+use crate::sources::{FetchError, ListLoader, ListResult, ListStore};
 use crate::status::Status;
 use crate::upstream::Upstream;
 
@@ -66,7 +66,7 @@ impl<U: Upstream> Reloader<U> {
         let mut store = ListStore::default();
         status.set_lists(&config.blocking.lists);
         let results = loader.load_each(&config.blocking.lists).await;
-        record_lists(&metrics, &status, &results);
+        record_lists(&metrics, &status, &outcomes(&results));
         store.update(results);
         let policy = build_policy(&config.blocking, &store).await?;
         install(&handler, &metrics, &status, policy);
@@ -118,18 +118,19 @@ impl<U: Upstream> Reloader<U> {
             // build thread; no test can reach it through a configuration.
             let mut store = self.store.clone();
             store.retain(&next.blocking.lists);
-            self.status.set_lists(&next.blocking.lists);
             let missing = store.missing(&next.blocking.lists);
+            let mut loaded = Vec::new();
             if !missing.is_empty() {
                 let results = self.loader.load_each(&missing).await;
-                // Recorded now, before the policy is built: if the build
-                // failed, these series would describe lists not in force,
-                // but validation leaves no known cause for that failure.
-                record_lists(&self.metrics, &self.status, &results);
+                loaded = outcomes(&results);
                 store.update(results);
             }
             match build_policy(&next.blocking, &store).await {
                 Ok(policy) => {
+                    // Metrics and status describe the new lists only once
+                    // they are in force.
+                    self.status.set_lists(&next.blocking.lists);
+                    record_lists(&self.metrics, &self.status, &loaded);
                     install(&self.handler, &self.metrics, &self.status, policy);
                     self.store = store;
                 }
@@ -157,7 +158,7 @@ impl<U: Upstream> Reloader<U> {
     /// last valid version.
     pub async fn refresh_lists(&mut self) {
         let results = self.loader.load_each(&self.active.blocking.lists).await;
-        record_lists(&self.metrics, &self.status, &results);
+        record_lists(&self.metrics, &self.status, &outcomes(&results));
         self.store.update(results);
         match build_policy(&self.active.blocking, &self.store).await {
             Ok(policy) => install(&self.handler, &self.metrics, &self.status, policy),
@@ -220,12 +221,31 @@ fn install<U: Upstream>(handler: &Handler<U>, metrics: &Metrics, status: &Status
     handler.set_policy(policy);
 }
 
-fn record_lists(metrics: &Metrics, status: &Status, results: &[(ListConfig, ListResult)]) {
-    for (config, result) in results {
-        match result {
-            Ok(list) => {
-                metrics.record_list_loaded(&config.source, list.deny.len());
-                status.list_loaded(config, list.deny.len());
+/// What metrics and status need from load results: rule counts or errors,
+/// without the lists themselves (cheap to keep until the policy is built).
+type Outcome = (ListConfig, Result<usize, FetchError>);
+
+fn outcomes(results: &[(ListConfig, ListResult)]) -> Vec<Outcome> {
+    results
+        .iter()
+        .map(|(config, result)| {
+            (
+                config.clone(),
+                result
+                    .as_ref()
+                    .map(|list| list.deny.len())
+                    .map_err(Clone::clone),
+            )
+        })
+        .collect()
+}
+
+fn record_lists(metrics: &Metrics, status: &Status, outcomes: &[Outcome]) {
+    for (config, outcome) in outcomes {
+        match outcome {
+            Ok(rules) => {
+                metrics.record_list_loaded(&config.source, *rules);
+                status.list_loaded(config, *rules);
             }
             Err(error) => {
                 metrics.record_list_failed(&config.source, error);
