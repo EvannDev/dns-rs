@@ -46,3 +46,39 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: .claude/hooks/test-rust-refactor-guard.sh
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: dns-rs:ci
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,scope=ci,mode=max
+      - name: Smoke test the image
+        run: |
+          command -v dig || sudo apt-get install -y --no-install-recommends dnsutils
+          mkdir -p "$RUNNER_TEMP/config"
+          printf '[blocking]\ndeny = ["*.doubleclick.net"]\n' > "$RUNNER_TEMP/config/dns-rs.toml"
+          docker run -d --name dns-rs \
+            -p 127.0.0.1:15353:5353/udp -p 127.0.0.1:15353:5353/tcp -p 127.0.0.1:18080:8080 \
+            -v "$RUNNER_TEMP/config:/etc/dns-rs:ro" -e DNS_RS_CONFIG=/etc/dns-rs/dns-rs.toml \
+            dns-rs:ci
+          for i in $(seq 1 60); do curl -sf localhost:18080/readyz && break; sleep 0.5; done
+          curl -sf localhost:18080/readyz
+          # Blocked over TCP, resolved over UDP, API disabled without a token.
+          test "$(dig @127.0.0.1 -p 15353 +tcp ad.doubleclick.net +short)" = "0.0.0.0"
+          test -n "$(dig @127.0.0.1 -p 15353 example.com +short +tries=3)"
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:18080/api/v1/status)" = 403
+          test "$(docker inspect dns-rs --format '{{.Config.User}}')" = nonroot
+          # SIGTERM stops it cleanly.
+          docker stop -t 10 dns-rs
+          test "$(docker inspect dns-rs --format '{{.State.ExitCode}}')" = 0
+      - name: Container logs
+        if: always()
+        run: docker logs dns-rs 2>&1 | tail -50 || true
+

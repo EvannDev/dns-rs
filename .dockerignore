@@ -1,0 +1,10 @@
+# Only sources and manifests are needed to build.
+target/
+.git/
+.github/
+.claude/
+.serena/
+docs/
+*.md
+dns-rs.toml
+!README.md
