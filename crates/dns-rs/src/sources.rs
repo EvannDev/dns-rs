@@ -99,7 +99,10 @@ impl ListLoader {
                 // The semaphore is never closed, so acquiring cannot fail.
                 let _permit = permits.acquire_owned().await;
                 let result = match loader.fetch(&config.source).await {
-                    Ok(text) => parse(text, config.bare_domains).await,
+                    Ok(text) => parse(text, config.bare_domains).await.map(|mut list| {
+                        list.origin = config.source.label();
+                        list
+                    }),
                     Err(error) => Err(error),
                 };
                 (index, config, result)
@@ -479,6 +482,16 @@ mod tests {
                 Rule::Subtree("t.example.net".to_owned()),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn loaded_list_is_labelled_with_its_source() {
+        let file = list_file("ads.example.com");
+        let source = ListSource::File(file.path().into());
+
+        let lists = loader().load(&configs(std::slice::from_ref(&source))).await;
+
+        assert_eq!(lists[0].origin, source.label());
     }
 
     #[tokio::test]

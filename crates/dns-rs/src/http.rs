@@ -4,27 +4,33 @@ use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use axum::Router;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::{Json, Router};
+use serde::Serialize;
 use tokio::net::TcpListener;
 
+use crate::blocking::BlockingMode;
+use crate::filter::{Match, Verdict};
+use crate::handler::PolicyView;
 use crate::metrics::Metrics;
 
 /// What the endpoint serves, shared with the rest of dns-rs.
 #[derive(Clone)]
 pub struct HttpState {
     metrics: Arc<Metrics>,
+    policy: Arc<dyn PolicyView>,
     ready: Arc<AtomicBool>,
 }
 
 impl HttpState {
     #[must_use]
-    pub fn new(metrics: Arc<Metrics>) -> Self {
+    pub fn new(metrics: Arc<Metrics>, policy: Arc<dyn PolicyView>) -> Self {
         Self {
             metrics,
+            policy,
             ready: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -41,8 +47,55 @@ pub async fn serve_http(listener: TcpListener, state: HttpState) -> io::Result<(
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readiness))
         .route("/metrics", get(metrics))
+        .route("/api/v1/check/{domain}", get(check))
         .with_state(state);
     axum::serve(listener, router).await
+}
+
+/// The answer of `/api/v1/check/{domain}`.
+#[derive(Serialize)]
+struct CheckResponse {
+    domain: String,
+    blocked: bool,
+    mode: BlockingMode,
+    denied_by: Option<Match>,
+    allowed_by: Option<Match>,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+/// Whether `domain` is blocked by the policy in force, and by which rule.
+async fn check(State(state): State<HttpState>, Path(domain): Path<String>) -> Response {
+    if !is_query_name(&domain) {
+        let error = format!("{domain:?} is not a domain name");
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+    }
+    let (mode, explanation) = state.policy.explain(&domain);
+    Json(CheckResponse {
+        domain,
+        blocked: explanation.verdict == Verdict::Blocked,
+        mode,
+        denied_by: explanation.denied_by,
+        allowed_by: explanation.allowed_by,
+    })
+    .into_response()
+}
+
+/// A name a client could query: DNS characters, labels of 1 to 63 bytes, at
+/// most 253 bytes, an optional trailing dot.
+fn is_query_name(name: &str) -> bool {
+    let name = name.strip_suffix('.').unwrap_or(name);
+    // An empty name is one empty label, rejected below.
+    name.len() <= 253
+        && name.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
 }
 
 async fn readiness(State(state): State<HttpState>) -> (StatusCode, &'static str) {
@@ -61,4 +114,55 @@ async fn metrics(State(state): State<HttpState>) -> impl IntoResponse {
         )],
         state.metrics.encode(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_names_within_dns_limits_are_accepted() {
+        let label_63 = "a".repeat(63);
+        // 4 labels of 63 + 3 dots = 255; trim to exactly 253 bytes.
+        let name_253 = format!("{label_63}.{label_63}.{label_63}.{}", "a".repeat(61));
+        assert_eq!(name_253.len(), 253);
+
+        for name in [
+            "example.com",
+            "example.com.",
+            "_dmarc.example.com",
+            "localhost",
+            &format!("{label_63}.com"),
+            &name_253,
+        ] {
+            assert!(is_query_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn query_names_beyond_dns_limits_are_rejected() {
+        let label_64 = "a".repeat(64);
+        let name_254 = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "a".repeat(63),
+            "a".repeat(63),
+            "a".repeat(62)
+        );
+        assert_eq!(name_254.len(), 254);
+
+        for name in [
+            "",
+            ".",
+            "..",
+            "a..b",
+            ".example.com",
+            "exa mple.com",
+            "ex%41mple.com",
+            &format!("{label_64}.com"),
+            &name_254,
+        ] {
+            assert!(!is_query_name(name), "{name:?}");
+        }
+    }
 }

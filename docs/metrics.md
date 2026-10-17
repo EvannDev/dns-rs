@@ -5,7 +5,8 @@ dns-rs serves a small HTTP endpoint on `http.listen` (default
 restart. If the address cannot be bound, dns-rs exits at startup.
 
 The endpoint has no authentication. Everything it serves is read-only, but
-metrics reveal traffic volumes and the version. On a shared network, bind it
+metrics reveal traffic volumes and the version, and `/api/v1/check` reveals
+your blocking rules and the lists they come from. On a shared network, bind it
 to loopback (`127.0.0.1:8080`) or, on Kubernetes, allow only the kubelet and
 Prometheus to reach it with a NetworkPolicy.
 
@@ -14,6 +15,7 @@ Prometheus to reach it with a NetworkPolicy.
 | `/healthz` | `200` with `ok` while the process runs (liveness) |
 | `/readyz` | `200` with `ready` once the DNS sockets are bound and the first blocking policy is installed; `503` with `starting` before that (readiness) |
 | `/metrics` | Metrics in the OpenMetrics text format (`application/openmetrics-text; version=1.0.0; charset=utf-8`) |
+| `/api/v1/check/{domain}` | JSON explanation of the blocking decision for a domain (see [Check API](#check-api)) |
 
 ## Metrics
 
@@ -71,6 +73,48 @@ create new series. See
 | `dns_rs_config_reloads_total` | Configuration changes `applied` or `rejected`. Unchanged files are not counted, and the same rejection is counted once |
 | `dns_rs_config_valid` | `1` while the configuration file, as last read, is valid; `0` after an invalid or missing file. It returns to `1` as soon as a valid file is read, even one identical to the applied configuration |
 | `dns_rs_cache_entries` | Responses held in the cache, read at each scrape |
+
+## Check API
+
+`GET /api/v1/check/{domain}` answers "why is this domain blocked, or not?"
+using the blocking policy in force, including after a reload. Nothing is
+queried upstream.
+
+```
+GET /api/v1/check/ad.doubleclick.net
+{"domain":"ad.doubleclick.net","blocked":false,"mode":"null",
+ "denied_by":{"kind":"exact","rule":"ad.doubleclick.net","origin":"https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts#f2b086a8"},
+ "allowed_by":{"kind":"exact","rule":"ad.doubleclick.net","origin":"config:allow"}}
+```
+
+| Field | Meaning |
+|---|---|
+| `domain` | The name as sent in the path |
+| `blocked` | `true` when a deny rule matches and no allow rule does (allow wins) |
+| `mode` | The configured `blocking.mode`: `null`, `nxdomain`, `nodata` or `refused` |
+| `denied_by` | The deny rule that matched, or `null` |
+| `allowed_by` | The allow rule that matched, or `null` |
+
+A rule is an object with three fields:
+
+- `kind`: `exact`, `subtree` or `regex`.
+- `rule`: the rule as written, for example `ads.example.com`,
+  `*.example.com` or a regular expression.
+- `origin`: where the rule comes from: `config:deny`, `config:allow`,
+  `config:deny_regex`, `config:allow_regex`, or the label of the blocklist
+  (the same label as the `list` metric label, without credentials, query
+  string or fragment).
+
+When several rules match, the most specific one is reported: an exact rule,
+then the closest subtree rule, then the first regex. Configuration rules are
+loaded before lists, so a rule found both in the configuration and in a list
+is attributed to the configuration; a rule present in several lists keeps its
+first origin.
+
+The name is lowercased and a trailing dot is ignored. A name that a client
+could not query (characters other than letters, digits, `-` and `_`, an empty
+label, a label over 63 bytes, or a name over 253 bytes) gets `400` with
+`{"error":"..."}`.
 
 ## Prometheus and Kubernetes
 

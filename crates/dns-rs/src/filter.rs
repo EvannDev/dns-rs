@@ -3,7 +3,7 @@
 //! Pure and synchronous: no I/O, so it can be rebuilt off the hot path and
 //! swapped in atomically.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use regex::RegexSet;
 
@@ -30,6 +30,37 @@ impl Rule {
     }
 }
 
+/// How a rule matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchKind {
+    Exact,
+    Subtree,
+    Regex,
+}
+
+/// A rule that matched, and where it comes from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Match {
+    pub kind: MatchKind,
+    /// The rule as written: `ads.example.com`, `*.example.com`, a regex.
+    pub rule: String,
+    pub origin: String,
+}
+
+/// Why a domain is blocked or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Explanation {
+    pub verdict: Verdict,
+    /// The most specific deny rule that matches, if any: exact, then the
+    /// closest subtree, then a regex (the first in lexicographic order, not
+    /// in configuration order).
+    pub denied_by: Option<Match>,
+    /// The most specific allow rule that matches, chosen the same way; it
+    /// wins over deny rules.
+    pub allowed_by: Option<Match>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Allowed,
@@ -48,14 +79,29 @@ impl FilterBuilder {
         Self::default()
     }
 
-    pub fn deny(&mut self, rule: Rule) -> &mut Self {
-        self.deny.add(rule);
+    /// Adds a deny rule coming from `origin` (`config:deny`, a list label…).
+    pub fn deny_from(&mut self, rule: Rule, origin: &str) -> &mut Self {
+        self.deny.add(rule, origin);
         self
     }
 
-    pub fn allow(&mut self, rule: Rule) -> &mut Self {
-        self.allow.add(rule);
+    /// Adds an allow rule coming from `origin`.
+    pub fn allow_from(&mut self, rule: Rule, origin: &str) -> &mut Self {
+        self.allow.add(rule, origin);
         self
+    }
+
+    /// Adds a deny rule of unknown origin (tests only: production rules
+    /// always say where they come from).
+    #[cfg(test)]
+    pub fn deny(&mut self, rule: Rule) -> &mut Self {
+        self.deny_from(rule, "")
+    }
+
+    /// Adds an allow rule of unknown origin (tests only).
+    #[cfg(test)]
+    pub fn allow(&mut self, rule: Rule) -> &mut Self {
+        self.allow_from(rule, "")
     }
 
     /// Compiles the rules; fails on the first invalid regex.
@@ -67,53 +113,113 @@ impl FilterBuilder {
     }
 }
 
+/// Index into a [`Rules`]' origins: a few bytes per rule instead of a string.
+type OriginId = u32;
+
 #[derive(Debug, Default)]
 struct RulesBuilder {
-    exact: HashSet<Box<str>>,
-    subtree: HashSet<Box<str>>,
+    origins: Vec<Box<str>>,
+    origin_ids: HashMap<Box<str>, OriginId>,
+    exact: HashMap<Box<str>, OriginId>,
+    subtree: HashMap<Box<str>, OriginId>,
     // Ordered so the compiled set is deterministic.
-    regex: BTreeSet<String>,
+    regex: BTreeMap<String, OriginId>,
 }
 
 impl RulesBuilder {
-    fn add(&mut self, rule: Rule) {
+    /// Adds `rule`; a rule already present keeps its first origin.
+    fn add(&mut self, rule: Rule, origin: &str) {
+        let id = self.origin_id(origin);
         match rule {
-            Rule::Exact(domain) => self.exact.insert(normalize(&domain).into()),
-            Rule::Subtree(domain) => self.subtree.insert(normalize(&domain).into()),
-            Rule::Regex(pattern) => self.regex.insert(pattern),
+            Rule::Exact(domain) => self.exact.entry(normalize(&domain).into()).or_insert(id),
+            Rule::Subtree(domain) => self.subtree.entry(normalize(&domain).into()).or_insert(id),
+            Rule::Regex(pattern) => self.regex.entry(pattern).or_insert(id),
         };
     }
 
+    fn origin_id(&mut self, origin: &str) -> OriginId {
+        if let Some(&id) = self.origin_ids.get(origin) {
+            return id;
+        }
+        // Origins are config keys and lists: far fewer than u32::MAX.
+        let id = OriginId::try_from(self.origins.len()).unwrap_or(OriginId::MAX);
+        self.origins.push(origin.into());
+        self.origin_ids.insert(origin.into(), id);
+        id
+    }
+
     fn build(self) -> Result<Rules, regex::Error> {
+        let (patterns, regex_origins): (Vec<String>, Vec<OriginId>) =
+            self.regex.into_iter().unzip();
         Ok(Rules {
-            regex: RegexSet::new(&self.regex)?,
+            regex: RegexSet::new(&patterns)?,
+            regex_patterns: patterns,
+            regex_origins,
             exact: self.exact,
             subtree: self.subtree,
+            origins: self.origins,
         })
     }
 }
 
 #[derive(Debug)]
 struct Rules {
-    exact: HashSet<Box<str>>,
-    subtree: HashSet<Box<str>>,
+    exact: HashMap<Box<str>, OriginId>,
+    subtree: HashMap<Box<str>, OriginId>,
     regex: RegexSet,
+    regex_patterns: Vec<String>,
+    regex_origins: Vec<OriginId>,
+    origins: Vec<Box<str>>,
 }
 
 impl Rules {
     fn empty() -> Self {
         Self {
-            exact: HashSet::new(),
-            subtree: HashSet::new(),
+            exact: HashMap::new(),
+            subtree: HashMap::new(),
             regex: RegexSet::empty(),
+            regex_patterns: Vec::new(),
+            regex_origins: Vec::new(),
+            origins: Vec::new(),
         }
     }
 
     /// `domain` must already be normalized.
     fn matches(&self, domain: &str) -> bool {
-        self.exact.contains(domain)
-            || suffixes(domain).any(|suffix| self.subtree.contains(suffix))
+        self.exact.contains_key(domain)
+            || suffixes(domain).any(|suffix| self.subtree.contains_key(suffix))
             || self.regex.is_match(domain)
+    }
+
+    /// The most specific matching rule: exact, then the closest subtree,
+    /// then the first regex. `domain` must already be normalized.
+    fn first_match(&self, domain: &str) -> Option<Match> {
+        if let Some(&id) = self.exact.get(domain) {
+            return Some(self.found(MatchKind::Exact, domain.to_owned(), id));
+        }
+        if let Some((suffix, &id)) =
+            suffixes(domain).find_map(|suffix| self.subtree.get(suffix).map(|id| (suffix, id)))
+        {
+            return Some(self.found(MatchKind::Subtree, format!("*.{suffix}"), id));
+        }
+        let index = self.regex.matches(domain).into_iter().next()?;
+        Some(self.found(
+            MatchKind::Regex,
+            self.regex_patterns[index].clone(),
+            self.regex_origins[index],
+        ))
+    }
+
+    fn found(&self, kind: MatchKind, rule: String, origin: OriginId) -> Match {
+        debug_assert!(
+            usize::try_from(origin).is_ok_and(|index| index < self.origins.len()),
+            "origin ids come from this rule set"
+        );
+        let origin = usize::try_from(origin)
+            .ok()
+            .and_then(|index| self.origins.get(index))
+            .map_or_else(String::new, ToString::to_string);
+        Match { kind, rule, origin }
     }
 
     fn len(&self) -> usize {
@@ -145,6 +251,24 @@ impl Filter {
             Verdict::Blocked
         } else {
             Verdict::Allowed
+        }
+    }
+
+    /// Like [`Filter::check`], with the rules that decided.
+    #[must_use]
+    pub fn explain(&self, domain: &str) -> Explanation {
+        let domain = normalize(domain);
+        let denied_by = self.deny.first_match(&domain);
+        let allowed_by = self.allow.first_match(&domain);
+        let verdict = if denied_by.is_some() && allowed_by.is_none() {
+            Verdict::Blocked
+        } else {
+            Verdict::Allowed
+        };
+        Explanation {
+            verdict,
+            denied_by,
+            allowed_by,
         }
     }
 
@@ -299,5 +423,152 @@ mod tests {
     fn pattern_with_wildcard_prefix_is_a_subtree() {
         assert_eq!(Rule::from_pattern("*.example.com"), subtree("example.com"));
         assert_eq!(Rule::from_pattern("example.com"), exact("example.com"));
+    }
+
+    mod explain {
+        use super::*;
+
+        fn filter() -> Filter {
+            let mut builder = FilterBuilder::new();
+            builder
+                .deny_from(exact("ads.example.com"), "config:deny")
+                .deny_from(subtree("tracker.net"), "https://lists.example/hosts")
+                .deny_from(regex(r"^ad[0-9]+\."), "config:deny_regex")
+                .allow_from(exact("ok.tracker.net"), "config:allow");
+            builder.build().unwrap()
+        }
+
+        #[expect(clippy::unnecessary_wraps, reason = "compared with Option fields")]
+        fn found(kind: MatchKind, rule: &str, origin: &str) -> Option<Match> {
+            Some(Match {
+                kind,
+                rule: rule.to_owned(),
+                origin: origin.to_owned(),
+            })
+        }
+
+        #[test]
+        fn exact_rule_is_named_with_its_origin() {
+            let explanation = filter().explain("ADS.example.com.");
+
+            assert_eq!(explanation.verdict, Verdict::Blocked);
+            assert_eq!(
+                explanation.denied_by,
+                found(MatchKind::Exact, "ads.example.com", "config:deny")
+            );
+            assert_eq!(explanation.allowed_by, None);
+        }
+
+        #[test]
+        fn subtree_rule_is_written_as_a_wildcard() {
+            let explanation = filter().explain("a.b.tracker.net");
+
+            assert_eq!(
+                explanation.denied_by,
+                found(
+                    MatchKind::Subtree,
+                    "*.tracker.net",
+                    "https://lists.example/hosts"
+                )
+            );
+        }
+
+        #[test]
+        fn regex_rule_is_named_by_its_pattern() {
+            let explanation = filter().explain("ad42.example.org");
+
+            assert_eq!(
+                explanation.denied_by,
+                found(MatchKind::Regex, r"^ad[0-9]+\.", "config:deny_regex")
+            );
+        }
+
+        #[test]
+        fn allow_rule_explains_why_a_denied_name_passes() {
+            let explanation = filter().explain("ok.tracker.net");
+
+            assert_eq!(explanation.verdict, Verdict::Allowed);
+            assert_eq!(
+                explanation.denied_by,
+                found(
+                    MatchKind::Subtree,
+                    "*.tracker.net",
+                    "https://lists.example/hosts"
+                )
+            );
+            assert_eq!(
+                explanation.allowed_by,
+                found(MatchKind::Exact, "ok.tracker.net", "config:allow")
+            );
+        }
+
+        #[test]
+        fn unmatched_name_has_no_rules() {
+            let explanation = filter().explain("example.com");
+
+            assert_eq!(explanation.verdict, Verdict::Allowed);
+            assert_eq!(explanation.denied_by, None);
+            assert_eq!(explanation.allowed_by, None);
+        }
+
+        // The most specific rule is the most useful to show.
+        #[test]
+        fn exact_wins_over_subtree_and_closest_subtree_wins() {
+            let mut builder = FilterBuilder::new();
+            builder
+                .deny_from(subtree("example.com"), "list:a")
+                .deny_from(subtree("ads.example.com"), "list:b")
+                .deny_from(exact("x.ads.example.com"), "list:c");
+            let filter = builder.build().unwrap();
+
+            assert_eq!(
+                filter
+                    .explain("x.ads.example.com")
+                    .denied_by
+                    .unwrap()
+                    .origin,
+                "list:c"
+            );
+            assert_eq!(
+                filter
+                    .explain("y.ads.example.com")
+                    .denied_by
+                    .unwrap()
+                    .origin,
+                "list:b"
+            );
+        }
+
+        // A rule present in several sources keeps the first one added.
+        #[test]
+        fn duplicate_rule_keeps_its_first_origin() {
+            let mut builder = FilterBuilder::new();
+            builder
+                .deny_from(exact("ads.example.com"), "list:first")
+                .deny_from(exact("ads.example.com"), "list:second");
+
+            let filter = builder.build().unwrap();
+
+            assert_eq!(
+                filter.explain("ads.example.com").denied_by.unwrap().origin,
+                "list:first"
+            );
+            assert_eq!(filter.deny_count(), 1);
+        }
+
+        #[test]
+        fn explain_agrees_with_check() {
+            let filter = filter();
+
+            for name in [
+                "ads.example.com",
+                "x.tracker.net",
+                "ok.tracker.net",
+                "ad1.x",
+                "example.com",
+            ] {
+                assert_eq!(filter.explain(name).verdict, filter.check(name), "{name}");
+            }
+        }
     }
 }

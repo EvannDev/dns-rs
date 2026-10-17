@@ -30,6 +30,9 @@ pub struct ParsedList {
     pub allow: Vec<Rule>,
     /// Lines that were neither rules nor comments, for diagnostics.
     pub skipped: usize,
+    /// Where the rules come from, shown when explaining a verdict (the
+    /// list's [label](crate::config::ListSource::label)).
+    pub origin: String,
 }
 
 /// What a domain listed without syntax (`example.com`, or a hosts entry)

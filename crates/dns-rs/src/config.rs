@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use regex::{Regex, RegexSet};
+use reqwest::Url;
 use serde::Deserialize;
 
 use crate::blocking::{BlockingMode, Policy};
@@ -208,6 +209,35 @@ impl std::fmt::Display for ListSource {
 }
 
 impl ListSource {
+    /// The list's URL without credentials, query or fragment, for metrics and
+    /// the API: neither has authentication, and private list URLs may carry a
+    /// token. When something was removed, a short fingerprint of the full URL
+    /// is appended, so lists that differ only by it (`?list=ads`,
+    /// `?list=trackers`) keep separate series; 32 bits do not reveal the
+    /// removed part.
+    #[must_use]
+    pub fn label(&self) -> String {
+        let ListSource::Http(full) = self else {
+            return self.to_string();
+        };
+        let Ok(mut url) = Url::parse(full) else {
+            // Validation rejects URLs that do not parse.
+            return "unparsable-url".to_owned();
+        };
+        let sensitive = !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some();
+        if !sensitive {
+            return url.to_string();
+        }
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        format!("{url}#{:08x}", fnv1a_64(full.as_bytes()) & 0xffff_ffff)
+    }
+
     /// Plain HTTP: a tampered list could inject `@@` exceptions and unblock
     /// domains, so these sources deserve a warning.
     #[must_use]
@@ -231,7 +261,7 @@ impl TryFrom<String> for ListSource {
             };
         }
         if value.starts_with("https://") || value.starts_with("http://") {
-            return match reqwest::Url::parse(&value) {
+            return match Url::parse(&value) {
                 Ok(_) => Ok(Self::Http(value)),
                 Err(error) => Err(format!("list {value:?}: invalid URL: {error}")),
             };
@@ -376,26 +406,28 @@ impl BlockingConfig {
         &self,
         lists: impl IntoIterator<Item = &'a ParsedList>,
     ) -> Result<Policy, ConfigError> {
+        // The configuration first: a rule also found in a list is shown as
+        // coming from the configuration, where the operator wrote it.
         let mut builder = FilterBuilder::new();
-        for list in lists {
-            for rule in &list.deny {
-                builder.deny(rule.clone());
-            }
-            for rule in &list.allow {
-                builder.allow(rule.clone());
-            }
-        }
         for pattern in &self.deny {
-            builder.deny(Rule::from_pattern(pattern));
+            builder.deny_from(Rule::from_pattern(pattern), "config:deny");
         }
         for pattern in &self.allow {
-            builder.allow(Rule::from_pattern(pattern));
+            builder.allow_from(Rule::from_pattern(pattern), "config:allow");
         }
         for pattern in &self.deny_regex {
-            builder.deny(Rule::Regex(pattern.clone()));
+            builder.deny_from(Rule::Regex(pattern.clone()), "config:deny_regex");
         }
         for pattern in &self.allow_regex {
-            builder.allow(Rule::Regex(pattern.clone()));
+            builder.allow_from(Rule::Regex(pattern.clone()), "config:allow_regex");
+        }
+        for list in lists {
+            for rule in &list.deny {
+                builder.deny_from(rule.clone(), &list.origin);
+            }
+            for rule in &list.allow {
+                builder.allow_from(rule.clone(), &list.origin);
+            }
         }
         let filter = builder
             .build()
@@ -475,6 +507,15 @@ fn deserialize_dns_server<'de, D: serde::Deserializer<'de>>(
     text.parse::<DnsServer>()
         .map(|server| server.0)
         .map_err(|error| serde::de::Error::custom(format!("{text:?}: {error}")))
+}
+
+/// FNV-1a, 64 bits: a fixed algorithm, so every build and every replica
+/// gives a list the same label (std's `DefaultHasher` may change between
+/// Rust versions).
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 #[cfg(test)]
@@ -880,6 +921,72 @@ mod tests {
     }
 
     #[test]
+    fn policy_rules_carry_their_origin() {
+        let config = Config::from_toml(
+            r#"
+            [blocking]
+            deny = ["denied.example.com"]
+            allow = ["allowed.example.com"]
+            deny_regex = ['^ad[0-9]+\.']
+            allow_regex = ['^ad1\.']
+            "#,
+        )
+        .unwrap();
+        let list = ParsedList {
+            deny: vec![Rule::Exact("listed.example.com".to_owned())],
+            allow: vec![Rule::Exact("excepted.example.com".to_owned())],
+            origin: "https://lists.example/hosts".to_owned(),
+            ..ParsedList::default()
+        };
+        let policy = config.blocking.policy(&[list]).unwrap();
+        let denied = |name: &str| policy.filter.explain(name).denied_by.map(|m| m.origin);
+        let allowed = |name: &str| policy.filter.explain(name).allowed_by.map(|m| m.origin);
+
+        assert_eq!(denied("denied.example.com").as_deref(), Some("config:deny"));
+        assert_eq!(
+            denied("ad2.example.com").as_deref(),
+            Some("config:deny_regex")
+        );
+        assert_eq!(
+            denied("listed.example.com").as_deref(),
+            Some("https://lists.example/hosts")
+        );
+        assert_eq!(
+            allowed("allowed.example.com").as_deref(),
+            Some("config:allow")
+        );
+        assert_eq!(
+            allowed("ad1.example.com").as_deref(),
+            Some("config:allow_regex")
+        );
+        assert_eq!(
+            allowed("excepted.example.com").as_deref(),
+            Some("https://lists.example/hosts")
+        );
+    }
+
+    // The operator wrote it in the configuration: that is the origin to show.
+    #[test]
+    fn rule_in_config_and_list_is_attributed_to_the_config() {
+        let config = Config::from_toml("[blocking]\ndeny = ['ads.example.com']").unwrap();
+        let list = ParsedList {
+            deny: vec![Rule::Exact("ads.example.com".to_owned())],
+            origin: "https://lists.example/hosts".to_owned(),
+            ..ParsedList::default()
+        };
+
+        let policy = config.blocking.policy(&[list]).unwrap();
+
+        let origin = policy
+            .filter
+            .explain("ads.example.com")
+            .denied_by
+            .unwrap()
+            .origin;
+        assert_eq!(origin, "config:deny");
+    }
+
+    #[test]
     fn policy_combines_config_rules_and_lists() {
         let config = Config::from_toml(
             r#"
@@ -895,7 +1002,7 @@ mod tests {
         let list = ParsedList {
             deny: vec![Rule::Subtree("ads.example".to_owned())],
             allow: vec![Rule::Exact("fine.ads.example".to_owned())],
-            skipped: 0,
+            ..ParsedList::default()
         };
 
         let policy = config.blocking.policy(&[list]).unwrap();
