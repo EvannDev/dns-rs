@@ -1,0 +1,29 @@
+suite: monitoring
+templates:
+  - templates/servicemonitor.yaml
+tests:
+  - it: needs Prometheus Operator, so is off by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: scrapes /metrics on the http service
+    set:
+      serviceMonitor.enabled: true
+      serviceMonitor.interval: 15s
+      serviceMonitor.labels: {release: prometheus}
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+      - equal:
+          path: metadata.labels.release
+          value: prometheus
+      - equal:
+          path: spec.endpoints
+          value: [{port: http, path: /metrics, interval: 15s}]
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: dns-rs
+            app.kubernetes.io/instance: RELEASE-NAME
+            app.kubernetes.io/component: http

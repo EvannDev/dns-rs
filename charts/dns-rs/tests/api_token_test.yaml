@@ -1,0 +1,83 @@
+suite: API token
+templates:
+  - templates/deployment.yaml
+  - templates/secret.yaml
+tests:
+  - it: leaves the API disabled by default
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content: {name: DNS_RS_API_TOKEN}
+
+  - it: creates no Secret by default
+    template: templates/secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: stores a given token in a Secret
+    template: templates/secret.yaml
+    set:
+      api.token: chart-token-0123456789
+    asserts:
+      - isKind:
+          of: Secret
+      - equal:
+          path: data.token
+          value: Y2hhcnQtdG9rZW4tMDEyMzQ1Njc4OQ==
+
+  # The token never appears in the pod spec, only a reference to it.
+  - it: passes a given token by reference
+    template: templates/deployment.yaml
+    set:
+      api.token: chart-token-0123456789
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_RS_API_TOKEN
+            valueFrom:
+              secretKeyRef: {name: RELEASE-NAME-dns-rs-api, key: token}
+
+  # A Secret's content is not part of the pod template: without this
+  # annotation, a rotated token would never reach running pods.
+  - it: rolls the pods when a chart-managed token changes
+    template: templates/deployment.yaml
+    set:
+      api.token: chart-token-0123456789
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/api-token"]
+          pattern: ^[0-9a-f]{64}$
+
+  - it: uses an existing Secret without creating one
+    template: templates/deployment.yaml
+    set:
+      api.existingSecret: my-dns-rs-token
+      api.existingSecretKey: api-token
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DNS_RS_API_TOKEN
+            valueFrom:
+              secretKeyRef: {name: my-dns-rs-token, key: api-token}
+
+  - it: creates no Secret when an existing one is used
+    template: templates/secret.yaml
+    set:
+      api.existingSecret: my-dns-rs-token
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: refuses both a token and an existing Secret
+    template: templates/deployment.yaml
+    set:
+      api.token: chart-token-0123456789
+      api.existingSecret: my-dns-rs-token
+    asserts:
+      - failedTemplate:
+          errorPattern: "api.token"

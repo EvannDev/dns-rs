@@ -63,6 +63,14 @@ tests:
       - failedTemplate:
           errorPattern: "size"
 
+  # dns-rs refuses shorter tokens at startup: pods would crash-loop.
+  - it: rejects an API token shorter than 16 characters
+    set:
+      api.token: short
+    asserts:
+      - failedTemplate:
+          errorPattern: "token"
+
   - it: accepts the default values
     asserts:
       - notFailedTemplate: {}

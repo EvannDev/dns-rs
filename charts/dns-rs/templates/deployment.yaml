@@ -3,6 +3,9 @@
 {{- if regexMatch "(?m)^[ \t]*(\\[[ \t]*(server|http|upstream|cache)[ \t]*\\]|(server|http|upstream|cache)[ \t]*[.=])" .Values.config }}
 {{- fail "config must only hold [blocking]: set upstream.server, upstream.timeoutMs and cache.size in values (listen addresses are set by the chart), so changes roll every replica" }}
 {{- end }}
+{{- if and .Values.api.token .Values.api.existingSecret }}
+{{- fail "set api.token or api.existingSecret, not both" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,9 +24,15 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- if or .Values.podAnnotations .Values.api.token }}
       annotations:
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.api.token }}
+        # The token is read at startup: a new one must restart the pods.
+        checksum/api-token: {{ .Values.api.token | sha256sum }}
+        {{- end }}
       {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
@@ -59,6 +68,14 @@ spec:
               value: {{ .Values.upstream.timeoutMs | int64 | quote }}
             - name: DNS_RS_CACHE_SIZE
               value: {{ .Values.cache.size | int64 | quote }}
+            {{- if or .Values.api.token .Values.api.existingSecret }}
+            # By reference: the token never appears in the pod spec.
+            - name: DNS_RS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.existingSecret | default (printf "%s-api" (include "dns-rs.fullname" .)) }}
+                  key: {{ if .Values.api.existingSecret }}{{ .Values.api.existingSecretKey }}{{ else }}token{{ end }}
+            {{- end }}
           ports:
             - name: dns-udp
               containerPort: 5353
@@ -94,6 +111,15 @@ spec:
         - name: config
           configMap:
             name: {{ include "dns-rs.fullname" . }}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "dns-rs.selectorLabels" . | nindent 14 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

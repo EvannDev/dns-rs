@@ -1,0 +1,47 @@
+suite: network policy
+templates:
+  - templates/networkpolicy.yaml
+tests:
+  - it: is off by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # Egress stays open: dns-rs queries its upstream and downloads lists.
+  - it: filters ingress only
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.policyTypes
+          value: [Ingress]
+      - equal:
+          path: spec.podSelector.matchLabels
+          value:
+            app.kubernetes.io/name: dns-rs
+            app.kubernetes.io/instance: RELEASE-NAME
+
+  - it: lets anyone query DNS but nobody reach HTTP unless allowed
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - equal:
+          path: spec.ingress
+          value:
+            - ports: [{port: 5353, protocol: UDP}, {port: 5353, protocol: TCP}]
+
+  - it: allows the given peers on DNS and HTTP
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.dns.from: [{ipBlock: {cidr: 192.168.1.0/24}}]
+      networkPolicy.http.from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}}]
+    asserts:
+      - equal:
+          path: spec.ingress
+          value:
+            - ports: [{port: 5353, protocol: UDP}, {port: 5353, protocol: TCP}]
+              from: [{ipBlock: {cidr: 192.168.1.0/24}}]
+            - ports: [{port: 8080, protocol: TCP}]
+              from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}}]

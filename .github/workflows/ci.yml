@@ -99,8 +99,14 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp
           -v "$PWD/charts:/apps" helmunittest/helm-unittest:4.3.0-1.2.1 dns-rs
       - name: Validate rendered manifests
+        # Defaults, then every optional feature (charts/dns-rs/ci/*.yaml);
+        # CRDs such as ServiceMonitor are checked against the CRDs catalog.
         run: |
-          helm template ci charts/dns-rs \
-            | docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0-alpine \
-                -strict -summary -kubernetes-version 1.34.0 -
+          for values in "" charts/dns-rs/ci/*.yaml; do
+            helm template ci charts/dns-rs ${values:+-f "$values"} \
+              | docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0-alpine \
+                  -strict -summary -kubernetes-version 1.34.0 \
+                  -schema-location default \
+                  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' -
+          done
 
