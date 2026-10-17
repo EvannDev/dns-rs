@@ -83,6 +83,10 @@ fails "appVersion drifts" "charts/dns-rs/Chart.yaml appVersion is 0.1.0" "$scrip
 # Pre-releases are versions too.
 fixture 1.0.0-rc.1 1.0.0-rc.1 1.0.0-rc.1
 fails "pre-release needs its changelog section" "CHANGELOG.md has no section [1.0.0-rc.1]" "$scripts/check-release.sh" v1.0.0-rc.1
+printf '\n## [1.0.0-rc.1] - 2026-12-01\n\n- Release candidate.\n' >>"$work/repo/CHANGELOG.md"
+passes "pre-release tag" "$scripts/check-release.sh" v1.0.0-rc.1
+notes=$(cd "$work/repo" && "$scripts/release-notes.sh" 1.0.0-rc.1)
+[ "$notes" = "- Release candidate." ] || fail "notes of a pre-release: got '$notes'"
 
 # Release notes: the version's section, without its heading.
 fixture 0.2.0 0.2.0 0.2.0

@@ -16,7 +16,7 @@ and `linux/arm64` as one multi-platform manifest.
 |---|---|
 | `edge` | Every push to `main` |
 | `sha-<commit>` | Every push to `main` |
-| `X.Y.Z` and `X.Y` | A `v*` tag, through the `Release` workflow (see [Releasing](releasing.md)) |
+| `X.Y.Z` and `X.Y` | A `v*` tag, through the `Release` workflow (see [Releasing](releasing.md)); a pre-release (`vX.Y.Z-rc.1`) gets only `X.Y.Z-rc.1` |
 
 The workflow can also be started manually. Pull requests build the image and
 smoke-test it in CI but do not publish it.
