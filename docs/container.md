@@ -1,6 +1,6 @@
 # Container image
 
-The image is built from the [`Dockerfile`](../Dockerfile) at the repository
+The image is built from the [`Dockerfile`](https://github.com/EvannDev/dns-rs/blob/main/Dockerfile) at the repository
 root. It builds with the toolchain pinned in `rust-toolchain.toml` and ships
 the binary on `gcr.io/distroless/cc-debian13:nonroot`: no shell, no package
 manager, CA certificates for HTTPS blocklists, and a non-root user

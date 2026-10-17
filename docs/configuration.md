@@ -3,7 +3,7 @@
 dns-rs reads one TOML file, named by the `DNS_RS_CONFIG` environment
 variable. Without it, the defaults below apply. Every section and key is
 optional, and an unknown key is an error. The commented reference is
-[`dns-rs.example.toml`](../dns-rs.example.toml).
+[`dns-rs.example.toml`](https://github.com/EvannDev/dns-rs/blob/main/dns-rs.example.toml).
 
 Durations use the humantime format (`2s`, `500ms`, `24h`).
 
