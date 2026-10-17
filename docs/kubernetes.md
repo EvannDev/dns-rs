@@ -176,7 +176,8 @@ With `networkPolicy.dns.from` set, allow pods labelled
 
 ## Checks in CI
 
-The `chart` job runs `helm lint`, the helm-unittest suites in
+The `chart` job runs `helm lint --strict` (warnings fail) on the default
+values and on each file in `charts/dns-rs/ci/`, the helm-unittest suites in
 `charts/dns-rs/tests` and `kubeconform -strict` against Kubernetes 1.34 on
 the rendered manifests, with the default values and with every feature on
 (`charts/dns-rs/ci/all-features-values.yaml`).
