@@ -2,6 +2,7 @@
 
 A network-wide DNS sinkhole written in Rust — a modern take on Pi-hole, built to
 run in a container and scale as stateless replicas.
+Documentation: <https://evanndev.github.io/dns-rs/>.
 
 > Status: caching DNS forwarder with blocking (blocklists over HTTPS or from
 > files, allow/deny rules, regexes) that reloads its configuration and
@@ -83,7 +84,7 @@ minimum `1m`). A list that fails keeps its last valid version. On a
 configuration reload only new lists are downloaded; removed lists stop
 blocking.
 
-See the [documentation](docs/README.md) for the configuration reference,
+Read the documentation at <https://evanndev.github.io/dns-rs/> (sources in [`docs/`](docs/README.md)) for the configuration reference,
 blocklist formats, metrics and the log format.
 
 ## Develop

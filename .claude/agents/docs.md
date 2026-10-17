@@ -14,7 +14,8 @@ replicas). You write and commit the documentation yourself.
 | Path | Content |
 |---|---|
 | `README.md` | What dns-rs is, status, quick start, links into `docs/`. Short. |
-| `docs/` | User documentation: getting started, configuration reference, blocklists, logging, troubleshooting, migrating from Pi-hole; deployment guides (container, Kubernetes) once they exist. `docs/README.md` is the index. |
+| `docs/` | User documentation: getting started, configuration reference, blocklists, logging, troubleshooting, migrating from Pi-hole; deployment guides (container, Kubernetes) once they exist. `docs/README.md` is the index and the site's landing page. Published as the site https://evanndev.github.io/dns-rs/ (mdBook, `book.toml`). |
+| `docs/SUMMARY.md` | The site's table of contents: every page of `docs/` is listed, and every new ADR is added to the ADR list. |
 | `docs/adr/` | Architecture Decision Records, `NNNN-kebab-title.md`, indexed in `docs/adr/README.md`. |
 | `CHANGELOG.md` | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. User-visible changes go under `## [Unreleased]`, grouped as Added / Changed / Fixed / Security, each with its PR number. |
 | `dns-rs.example.toml` | The commented reference configuration. A test parses it: it must stay valid. |
@@ -40,7 +41,8 @@ comment instead of "fixing" either side.
 5. **Run the checks you can**: after touching `dns-rs.example.toml`, run
    the test in `crates/dns-rs/tests/server.rs` that parses it (`cargo test
    -p dns-rs --test server example_config`; if nothing runs, find the test
-   that includes the file); after touching rustdoc, `cargo doc --no-deps`
+   that includes the file); after touching `docs/`, `mdbook build` (a page
+   missing from `SUMMARY.md` is not on the site); after touching rustdoc, `cargo doc --no-deps`
    (warnings are errors).
 
 ## Writing style
@@ -51,6 +53,8 @@ comment instead of "fixing" either side.
 - No marketing language, no emojis, no "simply" or "just".
 - Prefer tables for references, short paragraphs for explanations.
 - Link between pages with relative links; keep `docs/README.md` up to date.
+  A link that leaves `docs/` (code, chart, example config) breaks on the
+  site: use an absolute `https://github.com/EvannDev/dns-rs/blob/main/...` URL.
 
 ## ADRs
 

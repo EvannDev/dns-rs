@@ -1,6 +1,6 @@
 # Kubernetes
 
-The Helm chart in [`charts/dns-rs`](../charts/dns-rs) runs dns-rs as stateless
+The Helm chart in [`charts/dns-rs`](https://github.com/EvannDev/dns-rs/tree/main/charts/dns-rs) runs dns-rs as stateless
 replicas. A `v*` tag publishes it as an OCI artifact (see
 [Releasing](releasing.md)):
 
@@ -9,8 +9,7 @@ helm install dns-rs oci://ghcr.io/evanndev/charts/dns-rs --version 0.1.0 \
   --namespace dns --create-namespace
 ```
 
-Replace `0.1.0` with the version you want. The package on GHCR may be private
-until its owner makes it public. To install the development version, use a
+Replace `0.1.0` with the version you want. To install the development version, use a
 checkout of the repository instead:
 
 ```sh
@@ -79,7 +78,7 @@ and `helm lint`.
 
 `config` holds the `[blocking]`, `[local]` and `[[forward]]` parts of `dns-rs.toml` (see
 [Configuration](configuration.md) and
-[`dns-rs.example.toml`](../dns-rs.example.toml)):
+[`dns-rs.example.toml`](https://github.com/EvannDev/dns-rs/blob/main/dns-rs.example.toml)):
 
 ```yaml
 config: |

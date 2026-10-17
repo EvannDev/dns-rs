@@ -31,7 +31,8 @@ container and, later, as multiple stateless replicas on Kubernetes.
 ## Documentation
 
 Owned by the docs agent (`.claude/agents/docs.md`), which runs on every PR
-and weekly. Decisions are recorded in `docs/adr/`; read them before changing
+and weekly. `docs/` is published as the site https://evanndev.github.io/dns-rs/
+(mdBook, `book.toml`, `.github/workflows/docs-site.yml`). Decisions are recorded in `docs/adr/`; read them before changing
 a behaviour they cover, and supersede them with a new ADR rather than
 contradicting them.
 

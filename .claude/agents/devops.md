@@ -33,7 +33,8 @@ accepted ADR; if one stands in the way, stop and say so.
 
 - `.github/workflows/`: `ci.yml` (the required checks), `image.yml`
   (multi-arch image to GHCR), the Claude workflows (`claude-pr.yml`: docs then review on PRs;
-  `claude-docs.yml`: weekly docs audit; `claude.yml`: @claude mentions).
+  `claude-docs.yml`: weekly docs audit; `claude.yml`: @claude mentions),
+  `docs-site.yml` (mdBook site to GitHub Pages).
 - `.github/dependabot.yml`.
 - `Dockerfile` and `.dockerignore`: distroless, non-root `65532:65532`,
   DNS on 5353 and HTTP on 8080 inside the container.
