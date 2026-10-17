@@ -51,6 +51,9 @@ jobs:
       - run: .claude/hooks/test-rust-refactor-guard.sh
       - run: .claude/hooks/test-devops-guard.sh
       - run: .github/scripts/test-claude-mode.sh
+      - run: .github/scripts/test-release.sh
+      # The crate, the chart and its appVersion never drift apart.
+      - run: .github/scripts/check-release.sh
 
   image:
     runs-on: ubuntu-latest

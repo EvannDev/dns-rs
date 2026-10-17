@@ -80,5 +80,5 @@ so that N replicas can run behind one service.
 4. Container image (done, published to GHCR), control plane / data plane split, multi-replica
 5. Kubernetes: Helm chart (done: Deployment, Services, ConfigMap, API token
    Secret, PodDisruptionBudget, topology spread, ServiceMonitor,
-   NetworkPolicy, `helm test`, kind end-to-end in CI; planned: chart
-   publication), then CRDs
+   NetworkPolicy, `helm test`, kind end-to-end in CI, releases from v* tags
+   publishing the image and the chart as OCI), then CRDs

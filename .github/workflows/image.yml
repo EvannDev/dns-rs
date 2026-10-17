@@ -1,7 +1,8 @@
 name: Image
 
 # Publishes ghcr.io/evanndev/dns-rs for amd64 and arm64: "edge" and
-# "sha-<commit>" from main, semantic versions from v* tags. Each platform
+# "sha-<commit>" from main, semantic versions when release.yml calls it
+# for a v* tag. Each platform
 # builds on a native runner (Rust under QEMU emulation is several times
 # slower), then one multi-platform manifest is assembled. Actions are pinned
 # by commit SHA: this workflow can write packages, so a moved tag must not
@@ -9,7 +10,7 @@ name: Image
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
