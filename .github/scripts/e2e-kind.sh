@@ -69,9 +69,11 @@ deny = ["blocked.e2e.test", "reloaded.e2e.test"]
 TOML
 h upgrade "$release" charts/dns-rs --reuse-values --set-file config="$work/config.toml" --wait --timeout 2m
 # The kubelet refreshes ConfigMap volumes within about a minute; dns-rs
-# polls every 10 s. Each replica is asked directly, on its pod IP.
+# polls every 10 s. Each replica is asked directly, on its pod IP and the
+# port the chart gives the container.
+port=$(dns_pods 'spec.containers[0].ports[?(@.name=="dns-udp")].containerPort' | cut -d' ' -f1)
 for ip in $(dns_pods status.podIP); do
-  eventually 150 0.0.0.0 ask "$ip" 5353 reloaded.e2e.test
+  eventually 150 0.0.0.0 ask "$ip" "$port" reloaded.e2e.test
   echo "replica $ip reloaded"
 done
 [ "$(dns_pods metadata.name)" = "$names_before" ] || { echo "pods were replaced" >&2; exit 1; }

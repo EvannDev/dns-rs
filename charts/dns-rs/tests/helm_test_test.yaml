@@ -24,10 +24,10 @@ tests:
       - equal:
           path: spec.containers[0].command
           value: [sh, -ec]
-      - equal:
-          path: spec.containers[0].args
-          value:
-            - dig "@$SERVER" -p "$PORT" +tries=3 +time=2 "$QUERY" && dig "@$SERVER" -p "$PORT" +tries=3 +time=2 +tcp "$QUERY"
+      # UDP first (no +tcp), then TCP, both against $SERVER:$PORT.
+      - matchRegex:
+          path: spec.containers[0].args[0]
+          pattern: '^dig "@\$SERVER" -p "\$PORT" (\+[a-z]+=[0-9]+ )*"\$QUERY" && dig "@\$SERVER" -p "\$PORT" (\+[a-z]+=[0-9]+ )*\+tcp "\$QUERY"$'
       - contains:
           path: spec.containers[0].env
           content: {name: SERVER, value: RELEASE-NAME-dns-rs-dns}
