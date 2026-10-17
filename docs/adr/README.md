@@ -18,3 +18,4 @@ an old one.
 | [0010](0010-hot-reload-by-polling-and-sighup.md) | Hot reload by polling and SIGHUP, blocking settings only | Accepted |
 | [0011](0011-per-replica-bounded-metrics.md) | Per-replica metrics with bounded labels | Accepted |
 | [0012](0012-api-requires-a-bearer-token.md) | The API requires a bearer token | Accepted |
+| [0013](0013-container-listens-on-an-unprivileged-port.md) | The container listens on an unprivileged port | Accepted |
