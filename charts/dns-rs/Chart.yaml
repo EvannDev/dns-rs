@@ -7,5 +7,7 @@ appVersion: "0.1.0"
 home: https://github.com/EvannDev/dns-rs
 sources:
   - https://github.com/EvannDev/dns-rs
-license: Apache-2.0
+annotations:
+  # Chart.yaml has no license field; this is where Artifact Hub reads it.
+  artifacthub.io/license: Apache-2.0
 keywords: [dns, sinkhole, adblock, pihole]

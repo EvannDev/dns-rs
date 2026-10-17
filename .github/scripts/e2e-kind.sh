@@ -72,6 +72,7 @@ h upgrade "$release" charts/dns-rs --reuse-values --set-file config="$work/confi
 # polls every 10 s. Each replica is asked directly, on its pod IP and the
 # port the chart gives the container.
 port=$(dns_pods 'spec.containers[0].ports[?(@.name=="dns-udp")].containerPort' | cut -d' ' -f1)
+[ -n "$port" ] || { echo "no dns-udp container port in the dns-rs pods" >&2; exit 1; }
 for ip in $(dns_pods status.podIP); do
   eventually 150 0.0.0.0 ask "$ip" "$port" reloaded.e2e.test
   echo "replica $ip reloaded"
