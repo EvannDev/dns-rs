@@ -71,6 +71,8 @@ jobs:
           for i in $(seq 1 60); do curl -sf localhost:18080/readyz && break; sleep 0.5; done
           curl -sf localhost:18080/readyz
           # Blocked over TCP, resolved over UDP, API disabled without a token.
+          # Resolution goes to the real default upstream: unlike `cargo test`,
+          # this end-to-end check deliberately uses the network.
           test "$(dig @127.0.0.1 -p 15353 +tcp ad.doubleclick.net +short)" = "0.0.0.0"
           test -n "$(dig @127.0.0.1 -p 15353 example.com +short +tries=3)"
           test "$(curl -s -o /dev/null -w '%{http_code}' localhost:18080/api/v1/status)" = 403
@@ -80,5 +82,4 @@ jobs:
           test "$(docker inspect dns-rs --format '{{.State.ExitCode}}')" = 0
       - name: Container logs
         if: always()
-        run: docker logs dns-rs 2>&1 | tail -50 || true
-
+        run: docker logs dns-rs 2>&1 | tail -50

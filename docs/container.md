@@ -29,6 +29,12 @@ docker run -d -p 53:5353/udp -p 53:5353/tcp -p 8080:8080 \
   ghcr.io/evanndev/dns-rs:edge
 ```
 
+Do not publish the DNS port to the Internet. dns-rs answers any client, so
+an exposed port makes it an open resolver: attackers use those to amplify
+denial-of-service attacks. Keep it on your LAN (publish on a private
+address, `-p 192.168.1.10:53:5353/udp`), or restrict it with a firewall or a
+Kubernetes NetworkPolicy.
+
 Without `DNS_RS_CONFIG` the defaults apply (see
 [Configuration](configuration.md)).
 
