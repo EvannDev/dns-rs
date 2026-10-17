@@ -12,5 +12,6 @@ pub mod query_log;
 pub mod reload;
 pub mod server;
 pub mod sources;
+pub mod status;
 pub mod upstream;
 pub mod wire;
