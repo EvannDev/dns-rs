@@ -207,6 +207,7 @@ fn source_label(source: Source) -> &'static str {
         Source::Upstream => "upstream",
         Source::Blocked => "blocked",
         Source::Local => "local",
+        Source::Forwarded => "forwarded",
         Source::Rejected => "rejected",
         Source::Failed => "failed",
     }
@@ -371,6 +372,24 @@ mod tests {
         let text = metrics.encode();
         assert!(
             text.contains(r#"dns_rs_queries_total{source="local",rcode="NOERROR",type="A"} 1"#),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn forwarded_answers_are_counted_under_their_own_source() {
+        let metrics = Metrics::new();
+
+        record(
+            &metrics,
+            Source::Forwarded,
+            ResponseCode::NoError,
+            Some(RecordType::A),
+        );
+
+        let text = metrics.encode();
+        assert!(
+            text.contains(r#"dns_rs_queries_total{source="forwarded",rcode="NOERROR",type="A"} 1"#),
             "{text}"
         );
     }

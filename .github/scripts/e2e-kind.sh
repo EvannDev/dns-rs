@@ -5,7 +5,7 @@
 #   - dns-rs resolves through its upstream (the cluster's DNS, so nothing
 #     leaves the cluster), blocks a denied name and answers a local record;
 #   - a configuration change (a new deny rule, a local record's new
-#     address) reaches every replica without a restart.
+#     address, a forwarded domain) reaches every replica without a restart.
 #
 # Usage: e2e-kind.sh <kube context> <image repository:tag>
 # The context must be a kind cluster: the script installs and deletes there.
@@ -37,6 +37,14 @@ eventually() {
   return 1
 }
 
+# Prints "forwarded" once <pod> has answered a query from a forwarded
+# domain, read from its metrics through the API server.
+forwarded_answers() {
+  kubectl --context "$context" get --raw \
+    "/api/v1/namespaces/$namespace/pods/$1:8080/proxy/metrics" |
+    grep '^dns_rs_queries_total{source="forwarded",rcode="NOERROR"' >/dev/null && echo forwarded
+}
+
 dns_pods() {
   k get pods -l "app.kubernetes.io/name=dns-rs,app.kubernetes.io/instance=$release" \
     -o jsonpath="{.items[*].$1}"
@@ -64,12 +72,17 @@ echo "resolved through the upstream, blocked by the deny rule, answered locally"
 
 echo "== hot reload on every replica"
 names_before=$(dns_pods metadata.name)
-cat >"$work/config.toml" <<'TOML'
+# cluster.local goes to the cluster's DNS as a forwarded domain: the same
+# answer as through the upstream, told apart by its source in the metrics.
+cat >"$work/config.toml" <<TOML
 [blocking]
 mode = "null"
 deny = ["blocked.e2e.test", "reloaded.e2e.test"]
 [local]
 records = [{ name = "nas.e2e.test", ip = "192.0.2.11" }]
+[[forward]]
+domain = "cluster.local"
+server = "$upstream:53"
 TOML
 h upgrade "$release" charts/dns-rs --reuse-values --set-file config="$work/config.toml" --wait --timeout 2m
 # The kubelet refreshes ConfigMap volumes within about a minute; dns-rs
@@ -77,10 +90,13 @@ h upgrade "$release" charts/dns-rs --reuse-values --set-file config="$work/confi
 # port the chart gives the container.
 port=$(dns_pods 'spec.containers[0].ports[?(@.name=="dns-udp")].containerPort' | cut -d' ' -f1)
 [ -n "$port" ] || { echo "no dns-udp container port in the dns-rs pods" >&2; exit 1; }
-for ip in $(dns_pods status.podIP); do
+for pod in $(dns_pods metadata.name); do
+  ip=$(k get pod "$pod" -o jsonpath='{.status.podIP}')
   eventually 150 0.0.0.0 ask "$ip" "$port" reloaded.e2e.test
   eventually 10 192.0.2.11 ask "$ip" "$port" nas.e2e.test
-  echo "replica $ip reloaded"
+  eventually 10 "$kubernetes_ip" ask "$ip" "$port" kubernetes.default.svc.cluster.local
+  eventually 10 forwarded forwarded_answers "$pod"
+  echo "replica $pod ($ip) reloaded"
 done
 [ "$(dns_pods metadata.name)" = "$names_before" ] || { echo "pods were replaced" >&2; exit 1; }
 restarts=$(dns_pods 'status.containerStatuses[0].restartCount')

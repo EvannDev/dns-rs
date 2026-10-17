@@ -30,6 +30,12 @@ pub trait Upstream: Send + Sync + 'static {
     -> impl Future<Output = Result<Message, UpstreamError>> + Send;
 }
 
+/// An upstream built from an address, as the servers of forwarded domains
+/// are on each reload (ADR 0017).
+pub trait Connect: Upstream + Sized {
+    fn connect(addr: SocketAddr, timeout: Duration) -> Self;
+}
+
 /// A classic DNS server reached over UDP, falling back to TCP on truncation.
 #[derive(Debug, Clone)]
 pub struct DnsUpstream {
@@ -41,6 +47,12 @@ impl DnsUpstream {
     #[must_use]
     pub fn new(addr: SocketAddr, timeout: Duration) -> Self {
         Self { addr, timeout }
+    }
+}
+
+impl Connect for DnsUpstream {
+    fn connect(addr: SocketAddr, timeout: Duration) -> Self {
+        Self::new(addr, timeout)
     }
 }
 

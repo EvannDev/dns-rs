@@ -1,7 +1,9 @@
 {{- /* Startup settings in the reloaded configuration would only reach pods
-     created later: replicas would run different values. */ -}}
-{{- if regexMatch "(?m)^[ \t]*(\\[[ \t]*(server|http|upstream|cache)[ \t]*\\]|(server|http|upstream|cache)[ \t]*[.=])" .Values.config }}
-{{- fail "config must only hold [blocking] and [local]: set upstream.server, upstream.timeoutMs and cache.size in values (listen addresses are set by the chart), so changes roll every replica" }}
+     created later: replicas would run different values. They can be a
+     section, dotted keys or an inline table; a plain `server = "…"` is the
+     key of a [[forward]] table. */ -}}
+{{- if regexMatch "(?m)^[ \t]*(\\[[ \t]*(server|http|upstream|cache)[ \t]*\\]|(server|http|upstream|cache)[ \t]*(\\.|=[ \t]*\\{))" .Values.config }}
+{{- fail "config must only hold [blocking], [local] and [[forward]]: set upstream.server, upstream.timeoutMs and cache.size in values (listen addresses are set by the chart), so changes roll every replica" }}
 {{- end }}
 {{- if and .Values.api.token .Values.api.existingSecret }}
 {{- fail "set api.token or api.existingSecret, not both" }}

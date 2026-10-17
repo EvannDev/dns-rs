@@ -194,6 +194,16 @@ tests:
     asserts:
       - notFailedTemplate: {}
 
+  # ADR 0017: forwarded domains apply live too.
+  - it: accepts forwarded domains in the reloaded configuration
+    set:
+      config: |
+        [[forward]]
+        domain = "home.arpa"
+        server = "192.168.1.1"
+    asserts:
+      - notFailedTemplate: {}
+
   - it: names the sections it accepts when refusing one
     set:
       config: |
@@ -201,7 +211,7 @@ tests:
         listen = "0.0.0.0:53"
     asserts:
       - failedTemplate:
-          errorPattern: "only hold \\[blocking\\] and \\[local\\]"
+          errorPattern: "only hold \\[blocking\\], \\[local\\] and \\[\\[forward\\]\\]"
 
   - it: uses the pull policy and resources from values
     set:
