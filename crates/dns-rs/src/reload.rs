@@ -1055,7 +1055,10 @@ mod tests {
             remove(&setup.path("token"));
             let change = reloader.reload_api_token();
 
-            assert!(matches!(change, TokenChange::Rejected(_)), "{change:?}");
+            assert!(
+                matches!(change, TokenChange::Rejected(_)),
+                "expected rejected token change"
+            );
             assert_eq!(current(&slot).as_deref(), Some(OLD));
         }
 
