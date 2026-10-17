@@ -30,6 +30,18 @@ A few can be overridden by environment variables, handy in containers:
 | `DNS_RS_CACHE_SIZE` | `cache.size` |
 | `RUST_LOG` | Log filter, default `info`; `dns_rs::query=off` silences the query log |
 
+### Container
+
+A multi-platform (amd64, arm64) image is published to
+`ghcr.io/evanndev/dns-rs` (`edge` follows `main`). DNS listens on 5353 inside
+the container, so publish it as 53; see [Container image](docs/container.md).
+
+```sh
+docker run -d -p 53:5353/udp -p 53:5353/tcp -p 8080:8080 \
+  -v "$PWD/dns-rs.toml:/etc/dns-rs/dns-rs.toml:ro" -e DNS_RS_CONFIG=/etc/dns-rs/dns-rs.toml \
+  ghcr.io/evanndev/dns-rs:edge
+```
+
 ## Reload without restart
 
 dns-rs reads the configuration file every 10 seconds (by content, so a

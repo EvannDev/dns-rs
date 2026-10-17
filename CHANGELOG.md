@@ -53,6 +53,10 @@ All notable changes to dns-rs are documented here. The format is based on
   configured list, its label, rules, last success and last failure. A failure
   shows its reason (and HTTP status) but never the error message, which may
   contain a list URL token. Requires the API token (#20).
+- Container image `ghcr.io/evanndev/dns-rs` for amd64 and arm64, on a
+  distroless base running as `nonroot`. DNS listens on 5353 and HTTP on 8080
+  inside the container (`DNS_RS_LISTEN`, `DNS_RS_HTTP_LISTEN`). Published from
+  `main` (`edge`, `sha-<commit>`) and `v*` tags (`X.Y.Z`, `X.Y`) (#21).
 
 ### Changed
 
