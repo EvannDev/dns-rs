@@ -77,7 +77,7 @@ and `helm lint`.
 
 ## Configuration
 
-`config` holds the `[blocking]` part of `dns-rs.toml` (see
+`config` holds the `[blocking]` and `[local]` parts of `dns-rs.toml` (see
 [Configuration](configuration.md) and
 [`dns-rs.example.toml`](../dns-rs.example.toml)):
 
@@ -87,6 +87,8 @@ config: |
   mode = "nxdomain"
   lists = ["https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"]
   deny = ["ads.example.com"]
+  [local]
+  records = [{ name = "nas.home.arpa", ip = "192.168.1.10" }]
 ```
 
 It is TOML text, not a YAML map: Helm's `toToml` writes integers as floats
@@ -105,7 +107,7 @@ environment variables (`DNS_RS_UPSTREAM`, `DNS_RS_UPSTREAM_TIMEOUT_MS`,
 ### Changing the configuration
 
 A change to `config` does not restart pods. dns-rs reads the mounted file
-every 10 seconds and applies `[blocking]` changes on the running pods; see
+every 10 seconds and applies `[blocking]` and `[local]` changes on the running pods; see
 [Reload without restart](configuration.md#reload-without-restart). The kubelet
 needs some time to refresh a mounted ConfigMap, so a change can take longer
 than 10 seconds to reach a pod.

@@ -52,6 +52,7 @@ Single crate for now (`crates/dns-rs`), split into crates only when needed.
 |---|---|
 | `server` | UDP/TCP listeners, UDP truncation, malformed-input handling |
 | `handler` | Request validation, blocking policy (`ArcSwap`), cache, upstream; reports the `Source` |
+| `local` | Local records (`[local]`): exact, case-insensitive A/AAAA answers, authoritative, before blocking, applied live |
 | `blocking` | Blocking modes and synthesized answers for blocked names |
 | `cache` | TTL-aware response cache, negative caching (RFC 2308) |
 | `filter` | Pure allow/deny engine: exact, subtree (`*.domain`), regex; allow wins |

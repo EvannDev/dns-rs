@@ -19,7 +19,7 @@ cache:
   # Maximum number of cached responses.
   size: 10000
 
-# The [blocking] part of dns-rs.toml, as TOML text (see
+# The [blocking] and [local] parts of dns-rs.toml, as TOML text (see
 # dns-rs.example.toml). It becomes a ConfigMap that dns-rs reads again every
 # 10 s, so changes apply without restarting pods. Startup settings
 # ([server], [http], [upstream], [cache]) are refused here: set them above,
@@ -28,6 +28,8 @@ config: |
   [blocking]
   mode = "null"
   # lists = ["https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"]
+  # [local]
+  # records = [{ name = "nas.home.arpa", ip = "192.168.1.10" }]
 
 # The API (/api/v1/...) needs a bearer token; without one it is disabled.
 api:

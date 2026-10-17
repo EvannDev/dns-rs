@@ -76,3 +76,23 @@ allow = []
 # Example (default: none): deny_regex = ['^ad[0-9]+\.']
 deny_regex = []
 allow_regex = []
+
+[local]
+# Names dns-rs answers itself, before blocking (a local name is never
+# blocked by a list) and without the upstream or the cache. Applies on
+# reload, no restart needed.
+#
+# The address family gives the type: A for IPv4, AAAA for IPv6. A name may
+# have several records. Names match exactly, without regard to case;
+# subdomains of a local name are not local. A name needs at least two
+# labels; `home.arpa` (RFC 8375) is meant for home networks. Other types
+# (MX, TXT...) and a family with no record get an empty NOERROR.
+#
+# TTL of local answers, in seconds (default: 300).
+# ttl = 300
+# Example (default: none):
+# records = [
+#   { name = "nas.home.arpa", ip = "192.168.1.10" },
+#   { name = "nas.home.arpa", ip = "fd00::10" },
+# ]
+records = []

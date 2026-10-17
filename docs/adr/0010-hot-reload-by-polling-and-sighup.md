@@ -1,6 +1,6 @@
 # 0010. Hot reload by polling and SIGHUP, blocking settings only
 
-- Status: Accepted
+- Status: Accepted; amended by [0016](0016-local-records.md) (`[local]` also applies live)
 - Date: 2026-10-16
 
 ## Context
