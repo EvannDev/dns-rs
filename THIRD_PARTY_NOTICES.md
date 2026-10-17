@@ -2,9 +2,13 @@
 
 ## agency-agents
 
-`.claude/agents/rust-refactor.md` is adapted from "Rust Refactoring
-Specialist" in [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)
-(commit `8ef49232e024`), under the following license:
+Adapted from [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents),
+under the license below:
+
+- `.claude/agents/rust-refactor.md`, from "Rust Refactoring Specialist"
+  (commit `8ef49232e024`);
+- `.claude/agents/devops.md`, from "DevOps Automator" (commit
+  `b02fa83e4c95`).
 
 ```
 MIT License

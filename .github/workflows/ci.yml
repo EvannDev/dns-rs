@@ -49,6 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: .claude/hooks/test-rust-refactor-guard.sh
+      - run: .claude/hooks/test-devops-guard.sh
 
   image:
     runs-on: ubuntu-latest

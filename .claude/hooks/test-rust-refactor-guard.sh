@@ -9,10 +9,13 @@ guard="$(dirname "$0")/rust-refactor-guard.sh"
 failures=0
 
 run() {
-  # perl's alarm stops a hanging guard: a hook killed by a timeout lets the
-  # command run, so hanging is a failure (exit 142) like any other.
+  # A hook killed by a timeout lets the command run, so hanging is a failure
+  # (exit 142) like any other. The guard runs in its own process group, all
+  # of it killed: a looping subshell would otherwise keep the pipe open.
   jq -n --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}' \
-    | perl -e 'alarm 5; exec @ARGV' "$guard" 2>&1 >/dev/null
+    | perl -e '$pid = fork // die; if (!$pid) { setpgrp; exec @ARGV }
+        $SIG{ALRM} = sub { kill "KILL", -$pid; exit 142 }; alarm 5;
+        waitpid $pid, 0; exit($? >> 8)' "$guard" 2>&1 >/dev/null
 }
 
 fail() {
