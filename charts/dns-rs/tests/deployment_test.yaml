@@ -133,6 +133,28 @@ tests:
           path: spec.template.spec.containers[0].env
           content: {name: DNS_RS_CACHE_SIZE, value: "50000"}
 
+  # Helm reads numbers as float64: without a conversion, quote prints large
+  # ones in scientific notation ("1e+06"), which dns-rs rejects at startup.
+  - it: writes large numbers in full
+    set:
+      upstream.timeoutMs: 2000000
+      cache.size: 1000000
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DNS_RS_CACHE_SIZE, value: "1000000"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DNS_RS_UPSTREAM_TIMEOUT_MS, value: "2000000"}
+
+  - it: refuses restart-only keys written as inline tables
+    set:
+      config: |
+        cache = { size = 5 }
+    asserts:
+      - failedTemplate:
+          errorPattern: "cache.size"
+
   - it: refuses restart-only sections in the reloaded configuration
     set:
       config: |
