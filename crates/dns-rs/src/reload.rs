@@ -48,7 +48,7 @@ pub enum ConfigChange {
 /// mounted `ConfigMap` within about a minute, so a few seconds is plenty.
 pub const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
-type Lookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 pub struct Reloader<U> {
     handler: Arc<Handler<U>>,
@@ -78,14 +78,22 @@ impl<U: Upstream> Reloader<U> {
 
     /// Reads the API token again: a rotated Secret, mounted as a file,
     /// reaches every replica without a restart.
-    pub fn reload_api_token(&mut self) -> TokenChange {
+    pub async fn reload_api_token(&mut self) -> TokenChange {
         let Some(slot) = &self.api_token else {
             return TokenChange::Unchanged;
         };
-        let token = match self.active.api_token(&self.lookup) {
+        let (config, lookup) = (self.active.clone(), Arc::clone(&self.lookup));
+        // File I/O off the runtime threads, as for the configuration.
+        let read = tokio::task::spawn_blocking(move || {
+            config
+                .api_token(lookup.as_ref())
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap_or_else(|error| Err(format!("reading the API token failed: {error}")));
+        let token = match read {
             Ok(token) => token,
-            Err(error) => {
-                let reason = error.to_string();
+            Err(reason) => {
                 if self.last_token_rejection.as_ref() != Some(&reason) {
                     // The message names the source, never the token.
                     tracing::error!(error = %reason, "API token rejected, keeping the previous one");
@@ -125,7 +133,7 @@ impl<U: Upstream> Reloader<U> {
             metrics,
             status,
             loader,
-            lookup: Box::new(lookup),
+            lookup: Arc::new(lookup),
             active: config.clone(),
             last_seen: config,
             last_rejection: None,
@@ -143,9 +151,12 @@ impl<U: Upstream> Reloader<U> {
 
     /// Reads the configuration again and applies its blocking settings.
     pub async fn reload_config(&mut self) -> ConfigChange {
-        let next = match Config::load(&self.lookup) {
-            Ok(next) => next,
-            Err(error) => return self.reject(error.to_string()),
+        // File I/O off the runtime threads: a slow volume must not stall them.
+        let lookup = Arc::clone(&self.lookup);
+        let next = match tokio::task::spawn_blocking(move || Config::load(lookup.as_ref())).await {
+            Ok(Ok(next)) => next,
+            Ok(Err(error)) => return self.reject(error.to_string()),
+            Err(error) => return self.reject(format!("reading the configuration failed: {error}")),
         };
         self.last_rejection = None;
         // Valid again, even if identical to the last configuration seen.
@@ -238,13 +249,13 @@ impl<U: Upstream> Reloader<U> {
             tokio::select! {
                 _ = poll_timer.tick() => {
                     self.reload_config().await;
-                    self.reload_api_token();
+                    self.reload_api_token().await;
                 }
                 message = reload_now.recv() => match message {
                     Some(()) => {
                         tracing::info!("reload requested");
                         self.reload_config().await;
-                        self.reload_api_token();
+                        self.reload_api_token().await;
                     }
                     None => return,
                 },
@@ -393,10 +404,25 @@ mod tests {
         }
 
         async fn reloader(&self) -> (Reloader<NoUpstream>, Arc<Handler<NoUpstream>>) {
+            self.reloader_with_env(&[]).await
+        }
+
+        /// A reloader that also sees the environment variables `env`.
+        async fn reloader_with_env(
+            &self,
+            env: &[(&str, &str)],
+        ) -> (Reloader<NoUpstream>, Arc<Handler<NoUpstream>>) {
             let handler = Arc::new(Handler::new(NoUpstream, DnsCache::new(10)));
             let config_path = self.path("dns-rs.toml");
+            let env: Vec<(String, String)> = env
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
             let lookup = move |var: &str| {
-                (var == "DNS_RS_CONFIG").then(|| config_path.display().to_string())
+                if var == "DNS_RS_CONFIG" {
+                    return Some(config_path.display().to_string());
+                }
+                env.iter().find(|(k, _)| k == var).map(|(_, v)| v.clone())
             };
             let config = Config::load(&lookup).unwrap();
             let loader = ListLoader::new(Limits::default()).unwrap();
@@ -988,6 +1014,7 @@ mod tests {
 
         const OLD: &str = "old-token-0123456789";
         const NEW: &str = "new-token-0123456789";
+        const ENV: &str = "env-token-0123456789";
 
         async fn reloader_with_token(setup: &Setup) -> (Reloader<NoUpstream>, ApiTokenSlot) {
             setup.write("token", OLD);
@@ -1016,10 +1043,41 @@ mod tests {
             let (mut reloader, slot) = reloader_with_token(&setup).await;
 
             setup.write("token", NEW);
-            let change = reloader.reload_api_token();
+            let change = reloader.reload_api_token().await;
 
             assert_eq!(change, TokenChange::Rotated);
             assert_eq!(current(&slot).as_deref(), Some(NEW));
+        }
+
+        // DNS_RS_API_TOKEN wins over the file and is fixed for the process
+        // lifetime (ADR 0015): a file rotated next to it changes nothing.
+        #[tokio::test]
+        async fn environment_token_stays_fixed_when_the_file_changes() {
+            let setup = Setup::new();
+            setup.write("token", OLD);
+            setup.config(&format!(
+                "[http]\napi_token_file = '{}'",
+                setup.path("token").display()
+            ));
+            let (reloader, _handler) = setup.reloader_with_env(&[("DNS_RS_API_TOKEN", ENV)]).await;
+            let config = reloader.config().clone();
+            let slot: ApiTokenSlot = Arc::new(ArcSwap::from_pointee(
+                config
+                    .api_token(|var| (var == "DNS_RS_API_TOKEN").then(|| ENV.to_owned()))
+                    .unwrap(),
+            ));
+            let mut reloader = reloader.with_api_token(Arc::clone(&slot));
+
+            setup.write("token", NEW);
+            let change = reloader.reload_api_token().await;
+
+            assert_eq!(change, TokenChange::Unchanged);
+            assert!(
+                slot.load()
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(|t| t.matches(ENV))
+            );
         }
 
         #[tokio::test]
@@ -1027,7 +1085,7 @@ mod tests {
             let setup = Setup::new();
             let (mut reloader, slot) = reloader_with_token(&setup).await;
 
-            assert_eq!(reloader.reload_api_token(), TokenChange::Unchanged);
+            assert_eq!(reloader.reload_api_token().await, TokenChange::Unchanged);
             assert_eq!(current(&slot).as_deref(), Some(OLD));
         }
 
@@ -1037,11 +1095,12 @@ mod tests {
             let (mut reloader, slot) = reloader_with_token(&setup).await;
 
             setup.write("token", "short");
-            let change = reloader.reload_api_token();
+            let change = reloader.reload_api_token().await;
 
             assert!(
                 matches!(&change, TokenChange::Rejected(reason) if reason.contains("16")),
-                "{change:?}"
+                // Not the change itself: test output must not echo token data.
+                "expected a rejection naming the 16-character minimum"
             );
             assert_eq!(current(&slot).as_deref(), Some(OLD));
         }
@@ -1053,7 +1112,7 @@ mod tests {
             let (mut reloader, slot) = reloader_with_token(&setup).await;
 
             remove(&setup.path("token"));
-            let change = reloader.reload_api_token();
+            let change = reloader.reload_api_token().await;
 
             assert!(
                 matches!(change, TokenChange::Rejected(_)),
@@ -1068,7 +1127,7 @@ mod tests {
             setup.config("");
             let (mut reloader, _handler) = setup.reloader().await;
 
-            assert_eq!(reloader.reload_api_token(), TokenChange::Unchanged);
+            assert_eq!(reloader.reload_api_token().await, TokenChange::Unchanged);
         }
 
         #[tokio::test(start_paused = true)]
