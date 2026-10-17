@@ -72,6 +72,12 @@ All notable changes to dns-rs are documented here. The format is based on
 - Helm chart: `helm test` queries the DNS Service over UDP and TCP; configure
   it with `tests.enabled`, `tests.image` and `tests.query` (#26).
 
+- Releases: a `v*` tag on `main` publishes the image (`X.Y.Z` and `X.Y`),
+  the Helm chart as an OCI artifact (`oci://ghcr.io/evanndev/charts/dns-rs`)
+  and a GitHub release with the changelog section and the chart package.
+  Tags with a suffix (`v1.0.0-rc.1`) become pre-releases. CI checks that the
+  crate, chart and `appVersion` versions stay equal (#27).
+
 ### Changed
 
 - The API token file is read again on each configuration poll and on `SIGHUP`:
