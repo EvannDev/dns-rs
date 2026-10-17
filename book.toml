@@ -1,0 +1,23 @@
+# The documentation site, built from docs/ by mdBook and published to
+# GitHub Pages by .github/workflows/docs-site.yml.
+[book]
+title = "dns-rs"
+description = "A network-wide DNS sinkhole in Rust, built to run as stateless replicas"
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/book"
+# A chapter listed in SUMMARY.md without its file fails the build.
+create-missing = false
+# Not the default "index" preprocessor: it serves README.md pages as
+# index.html without rewriting the links to them, which then break. The
+# first chapter is still copied to the site's index.html.
+use-default-preprocessors = false
+
+[preprocessor.links]
+
+[output.html]
+site-url = "/dns-rs/"
+git-repository-url = "https://github.com/EvannDev/dns-rs"
+edit-url-template = "https://github.com/EvannDev/dns-rs/edit/main/{path}"
