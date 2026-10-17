@@ -34,7 +34,8 @@ A few can be overridden by environment variables, handy in containers:
 
 A multi-platform (amd64, arm64) image is published to
 `ghcr.io/evanndev/dns-rs` (`edge` follows `main`). DNS listens on 5353 inside
-the container, so publish it as 53; see [Container image](docs/container.md).
+the container, so publish it as 53; see [Container image](docs/container.md). On Kubernetes, use the Helm chart in
+`charts/dns-rs`; see [Kubernetes](docs/kubernetes.md).
 
 ```sh
 docker run -d -p 53:5353/udp -p 53:5353/tcp -p 8080:8080 \

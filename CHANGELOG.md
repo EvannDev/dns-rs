@@ -57,8 +57,16 @@ All notable changes to dns-rs are documented here. The format is based on
   distroless base running as `nonroot`. DNS listens on 5353 and HTTP on 8080
   inside the container (`DNS_RS_LISTEN`, `DNS_RS_HTTP_LISTEN`). Published from
   `main` (`edge`, `sha-<commit>`) and `v*` tags (`X.Y.Z`, `X.Y`) (#21).
+- Helm chart `charts/dns-rs`: a Deployment of stateless replicas (2 by
+  default), a ConfigMap from `config` (TOML text), a DNS Service (53, UDP and
+  TCP), an HTTP Service (8080), hardened pods and `values.schema.json`.
+  Configuration changes reach running pods through hot reload, without a
+  restart. Not published to a chart repository yet (#22).
 
 ### Changed
+
+- The container image declares `USER 65532:65532` instead of the name
+  `nonroot`, so Kubernetes can verify `runAsNonRoot` (#22).
 
 - Configuration parse errors are one line with their position, for example
   `line 4, column 1: unknown field ...` (#13).

@@ -3,8 +3,8 @@
 The image is built from the [`Dockerfile`](../Dockerfile) at the repository
 root. It builds with the toolchain pinned in `rust-toolchain.toml` and ships
 the binary on `gcr.io/distroless/cc-debian13:nonroot`: no shell, no package
-manager, CA certificates for HTTPS blocklists, and the `nonroot` user
-(UID 65532). The base images are pinned by digest and Dependabot keeps the
+manager, CA certificates for HTTPS blocklists, and a non-root user
+(`USER 65532:65532`, numeric so that Kubernetes can verify `runAsNonRoot`). The base images are pinned by digest and Dependabot keeps the
 digests up to date.
 
 ## Published images
@@ -49,7 +49,8 @@ capabilities or sysctls:
 | `DNS_RS_HTTP_LISTEN` | `0.0.0.0:8080` | Probes, metrics and API |
 
 Publish the DNS port as 53 on the host (`-p 53:5353/udp -p 53:5353/tcp`). In
-Kubernetes, use a Service with `port: 53` and `targetPort: 5353`.
+Kubernetes, use a Service with `port: 53` and `targetPort: 5353`, or the
+[Helm chart](kubernetes.md).
 
 Environment variables override the configuration file, so `server.listen` and
 `http.listen` in a mounted file have no effect unless you also override these
