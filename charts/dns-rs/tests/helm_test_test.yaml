@@ -1,0 +1,75 @@
+suite: helm test
+templates:
+  - templates/tests/dns-test.yaml
+tests:
+  - it: is a helm test hook
+    asserts:
+      - isKind:
+          of: Pod
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: test
+      - equal:
+          path: spec.restartPolicy
+          value: Never
+
+  # dig exits 0 on any answer (NXDOMAIN and SERVFAIL included) and 9 on
+  # none: the test proves dns-rs answers, whatever the upstream does. One
+  # container, so `helm test --logs` can show it.
+  - it: queries the DNS service over UDP and then TCP
+    asserts:
+      - lengthEqual:
+          path: spec.containers
+          count: 1
+      - equal:
+          path: spec.containers[0].command
+          value: [sh, -ec]
+      # UDP first (no +tcp), then TCP, both against $SERVER:$PORT.
+      - matchRegex:
+          path: spec.containers[0].args[0]
+          pattern: '^dig "@\$SERVER" -p "\$PORT" (\+[a-z]+=[0-9]+ )*"\$QUERY" && dig "@\$SERVER" -p "\$PORT" (\+[a-z]+=[0-9]+ )*\+tcp "\$QUERY"$'
+      - contains:
+          path: spec.containers[0].env
+          content: {name: SERVER, value: RELEASE-NAME-dns-rs-dns}
+      - contains:
+          path: spec.containers[0].env
+          content: {name: PORT, value: "53"}
+      - contains:
+          path: spec.containers[0].env
+          content: {name: QUERY, value: example.com}
+
+  - it: follows the DNS service port and the query from values
+    set:
+      service.dns.port: 5353
+      tests.query: kubernetes.default.svc.cluster.local
+    asserts:
+      - contains:
+          path: spec.containers[0].env
+          content: {name: PORT, value: "5353"}
+      - contains:
+          path: spec.containers[0].env
+          content: {name: QUERY, value: kubernetes.default.svc.cluster.local}
+
+  - it: runs without privileges
+    asserts:
+      - equal:
+          path: spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+
+  - it: uses the image from values
+    set:
+      tests.image: registry.example.com/dnsutils:1.0
+    asserts:
+      - equal:
+          path: spec.containers[0].image
+          value: registry.example.com/dnsutils:1.0
+
+  - it: can be left out
+    set:
+      tests.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

@@ -82,6 +82,14 @@ serviceMonitor:
   interval: 30s
   labels: {}
 
+# `helm test`: a pod queries the DNS Service over UDP and TCP. It passes
+# when dns-rs answers, whatever the answer. With networkPolicy.dns.from
+# set, allow pods labelled app.kubernetes.io/component=test.
+tests:
+  enabled: true
+  image: registry.k8s.io/e2e-test-images/jessie-dnsutils:1.7
+  query: example.com
+
 # Ingress filtering. Egress stays open: dns-rs queries its upstream and
 # downloads blocklists. Kubelet probes come from the node and are usually
 # allowed by the CNI regardless.

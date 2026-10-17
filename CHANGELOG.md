@@ -69,6 +69,8 @@ All notable changes to dns-rs are documented here. The format is based on
   spread across nodes, an optional ServiceMonitor and an optional ingress
   NetworkPolicy (#23).
 - `DNS_RS_API_TOKEN_FILE` sets `http.api_token_file` from the environment (#23).
+- Helm chart: `helm test` queries the DNS Service over UDP and TCP; configure
+  it with `tests.enabled`, `tests.image` and `tests.query` (#26).
 
 ### Changed
 

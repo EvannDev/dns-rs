@@ -1,0 +1,43 @@
+{{- if .Values.tests.enabled }}
+# `helm test`: dns-rs answers through its Service, over UDP and TCP. dig
+# exits 0 on any answer (NXDOMAIN, SERVFAIL) and 9 on none, so the result
+# does not depend on the upstream.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "dns-rs.fullname" . }}-test
+  labels:
+    {{- include "dns-rs.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    # One container, so `helm test --logs` can show it. Values reach the
+    # shell as environment variables, never as script text.
+    - name: dig
+      image: {{ .Values.tests.image }}
+      command: [sh, -ec]
+      args:
+        - dig "@$SERVER" -p "$PORT" +tries=3 +time=2 "$QUERY" && dig "@$SERVER" -p "$PORT" +tries=3 +time=2 +tcp "$QUERY"
+      env:
+        - name: SERVER
+          value: {{ include "dns-rs.fullname" . }}-dns
+        - name: PORT
+          value: {{ .Values.service.dns.port | int64 | quote }}
+        - name: QUERY
+          value: {{ .Values.tests.query | quote }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+{{- end }}
