@@ -40,6 +40,29 @@ tests:
       - failedTemplate:
           errorPattern: "replicas"
 
+  # The Kubernetes API rejects externalTrafficPolicy on a ClusterIP Service.
+  - it: rejects a traffic policy on a ClusterIP service
+    set:
+      service.dns.type: ClusterIP
+      service.dns.externalTrafficPolicy: Local
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalTrafficPolicy"
+
+  - it: accepts a traffic policy on a LoadBalancer service
+    set:
+      service.dns.type: LoadBalancer
+      service.dns.externalTrafficPolicy: Local
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: rejects a negative cache size
+    set:
+      cache.size: -1
+    asserts:
+      - failedTemplate:
+          errorPattern: "size"
+
   - it: accepts the default values
     asserts:
       - notFailedTemplate: {}

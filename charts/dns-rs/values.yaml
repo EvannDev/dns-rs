@@ -9,10 +9,21 @@ image:
 
 imagePullSecrets: []
 
-# dns-rs.toml, as TOML text (see dns-rs.example.toml). It becomes a
-# ConfigMap that dns-rs reads again every 10 s: [blocking] changes apply
-# without restarting pods. server.listen and http.listen are set by the
-# chart and need not appear here.
+# Startup settings. They are passed as environment variables, so changing
+# them rolls every replica: replicas never run different values.
+upstream:
+  # Resolver queries are forwarded to; the port defaults to 53.
+  server: "1.1.1.1:53"
+  timeoutMs: 2000
+cache:
+  # Maximum number of cached responses.
+  size: 10000
+
+# The [blocking] part of dns-rs.toml, as TOML text (see
+# dns-rs.example.toml). It becomes a ConfigMap that dns-rs reads again every
+# 10 s, so changes apply without restarting pods. Startup settings
+# ([server], [http], [upstream], [cache]) are refused here: set them above,
+# where a change rolls every replica.
 config: |
   [blocking]
   mode = "null"

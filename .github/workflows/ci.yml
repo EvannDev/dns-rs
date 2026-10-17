@@ -9,6 +9,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -91,7 +94,10 @@ jobs:
       - uses: azure/setup-helm@v5
       - run: helm lint charts/dns-rs
       - name: Unit tests
-        run: docker run --rm -v "$PWD/charts:/apps" helmunittest/helm-unittest:4.3.0-1.2.1 dns-rs
+        # As the runner's user, so the tool can write next to the checkout.
+        run: >-
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp
+          -v "$PWD/charts:/apps" helmunittest/helm-unittest:4.3.0-1.2.1 dns-rs
       - name: Validate rendered manifests
         run: |
           helm template ci charts/dns-rs \

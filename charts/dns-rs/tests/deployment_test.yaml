@@ -103,3 +103,74 @@ tests:
       - equal:
           path: spec.template.metadata.labels.team
           value: network
+
+  # The container ports above only work if dns-rs listens on them: the chart
+  # says so itself instead of relying on the image's defaults.
+  - it: sets the listen addresses matching the container ports
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DNS_RS_LISTEN, value: "0.0.0.0:5353"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DNS_RS_HTTP_LISTEN, value: "0.0.0.0:8080"}
+
+  # Settings that only apply at startup go into the pod template: changing
+  # them rolls every replica, so replicas never run different values.
+  - it: passes upstream and cache settings as environment variables
+    set:
+      upstream.server: "9.9.9.9:53"
+      upstream.timeoutMs: 1500
+      cache.size: 50000
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DNS_RS_UPSTREAM, value: "9.9.9.9:53"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DNS_RS_UPSTREAM_TIMEOUT_MS, value: "1500"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DNS_RS_CACHE_SIZE, value: "50000"}
+
+  - it: refuses restart-only sections in the reloaded configuration
+    set:
+      config: |
+        [blocking]
+        deny = ["ads.example.com"]
+        [cache]
+        size = 5
+    asserts:
+      - failedTemplate:
+          errorPattern: "cache.size"
+
+  - it: refuses restart-only dotted keys in the reloaded configuration
+    set:
+      config: |
+        upstream.server = "9.9.9.9"
+    asserts:
+      - failedTemplate:
+          errorPattern: "upstream"
+
+  - it: accepts a blocking-only configuration with comments
+    set:
+      config: |
+        # [cache] lives in values, not here
+        [blocking]
+        deny = ["cache.example.com"]
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: uses the pull policy and resources from values
+    set:
+      image.pullPolicy: Always
+      resources: {requests: {cpu: 10m}}
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: Always
+      # --set merges with the defaults: only the given value changes.
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.cpu
+          value: 10m
+

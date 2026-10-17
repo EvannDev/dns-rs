@@ -1,3 +1,8 @@
+{{- /* Startup settings in the reloaded configuration would only reach pods
+     created later: replicas would run different values. */ -}}
+{{- if regexMatch "(?m)^[ \t]*(\\[[ \t]*(server|http|upstream|cache)[ \t]*\\]|(server|http|upstream|cache)[ \t]*\\.)" .Values.config }}
+{{- fail "config must only hold [blocking]: set upstream.server, upstream.timeoutMs and cache.size in values (listen addresses are set by the chart), so changes roll every replica" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -40,6 +45,18 @@ spec:
             # The ConfigMap is read again every 10 s (ADR 0010).
             - name: DNS_RS_CONFIG
               value: /etc/dns-rs/dns-rs.toml
+            # Must match the container ports below.
+            - name: DNS_RS_LISTEN
+              value: "0.0.0.0:5353"
+            - name: DNS_RS_HTTP_LISTEN
+              value: "0.0.0.0:8080"
+            # Startup settings: a change rolls every replica.
+            - name: DNS_RS_UPSTREAM
+              value: {{ .Values.upstream.server | quote }}
+            - name: DNS_RS_UPSTREAM_TIMEOUT_MS
+              value: {{ .Values.upstream.timeoutMs | quote }}
+            - name: DNS_RS_CACHE_SIZE
+              value: {{ .Values.cache.size | quote }}
           ports:
             - name: dns-udp
               containerPort: 5353
