@@ -26,6 +26,7 @@ Durations use the humantime format (`2s`, `500ms`, `24h`).
 | `blocking.allow_regex` | none | Regexes of names to allow |
 | `local.ttl` | `300` | TTL of local answers, in seconds |
 | `local.records` | none | `{ name = "nas.home.arpa", ip = "192.168.1.10" }` tables answered by dns-rs itself (see [Local records](#local-records)) |
+| `forward` | none | `[[forward]]` tables with `domain` and `server` (see [Conditional forwarding](#conditional-forwarding)) |
 
 ## Local records
 
@@ -53,6 +54,36 @@ records = [
 - These queries have the source `local` in the [query log](logging.md#query-log)
   and the [metrics](metrics.md).
 - Not supported yet: PTR (reverse lookups) and CNAME.
+
+## Conditional forwarding
+
+A `[[forward]]` table sends a domain, and every name under it, to its own
+server instead of `upstream.server`, as Pi-hole's conditional forwarding does
+([ADR 0017](adr/0017-conditional-forwarding.md)):
+
+```toml
+[[forward]]
+domain = "home.arpa"
+server = "192.168.1.1"   # port 53 unless given
+```
+
+- Matching is label by label and case-insensitive, and a trailing dot is
+  ignored: `nas.home.arpa` is forwarded, `myhome.arpa` is not. When domains
+  nest, the longest one wins.
+- A domain may have a single label (`lan`). The root is rejected: use
+  `upstream.server` for that.
+- Order: local records, then blocking, then the cache, then the forward
+  server or the upstream. Blocking still applies to forwarded names.
+- The server is queried like the upstream (UDP with TCP fallback, same
+  `upstream.timeout`). Answers are cached.
+- If the server fails, the client gets SERVFAIL. The query is not retried
+  on the upstream, so private names do not leak.
+- A domain that is not a valid name, the root, or a domain given twice
+  (ignoring case and trailing dot) is a configuration error.
+- Changing the rules empties the cache, so an NXDOMAIN cached before a rule
+  existed does not hide it.
+- These queries have the source `forwarded` in the [query log](logging.md#query-log)
+  and the [metrics](metrics.md). A failing server is reported as `failed`.
 
 ## Environment variables
 
@@ -91,7 +122,7 @@ Beyond syntax, these are rejected:
 ## Reload without restart
 
 The file is read every 10 seconds, compared by content, and immediately on
-`SIGHUP`. Changes to `[blocking]` and `[local]` apply at once. Changes to `server.listen`,
+`SIGHUP`. Changes to `[blocking]`, `[local]` and `[[forward]]` apply at once. Changes to `server.listen`,
 `http.listen`, `http.api_token_file`, `upstream.server`, `upstream.timeout` and `cache.size` need a restart: dns-rs
 logs `configuration changes need a restart to apply` once, listing the
 settings, and keeps the running values. An invalid or missing file is

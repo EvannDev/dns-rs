@@ -14,7 +14,7 @@ Each answered query produces one `INFO` line under the target
 | `name` | Queried name, with the trailing dot |
 | `type` | Record type, for example `A` |
 | `rcode` | `NOERROR`, `FORMERR`, `SERVFAIL`, `NXDOMAIN`, `NOTIMP`, `REFUSED`, or `RCODE<n>` |
-| `source` | `cache`, `upstream`, `blocked`, `local` (a [local record](configuration.md#local-records)), `rejected` (FORMERR or NOTIMP) or `failed` (upstream could not answer, SERVFAIL) |
+| `source` | `cache`, `upstream`, `blocked`, `local` (a [local record](configuration.md#local-records)), `forwarded` (answered by a [forward server](configuration.md#conditional-forwarding)), `rejected` (FORMERR or NOTIMP) or `failed` (upstream or forward server could not answer, SERVFAIL) |
 | `duration_us` | Time to answer, in microseconds |
 
 Turn it off without silencing the rest: `RUST_LOG=info,dns_rs::query=off`.
@@ -26,6 +26,7 @@ Turn it off without silencing the rest: `RUST_LOG=info,dns_rs::query=off`.
 | info | `dns-rs started` | Listening; shows `listen`, `http_listen` and `upstream` |
 | info | `blocking policy loaded` | A policy is in force; shows the rule count and mode |
 | info | `local records loaded` | At startup and when `[local]` changed; `names` is the number of local names |
+| info | `forwarded domains loaded` | At startup and when `[[forward]]` changed; `domains` is the number of forwarded domains |
 | info | `blocklist loaded` | Per list: `deny`, `allow` and `skipped` counts |
 | warn | `cannot load blocklist, skipped` | A list failed; the cause is in `error` |
 | warn | `keeping the previous version of the blocklist` | A refresh failed, the old content stays |

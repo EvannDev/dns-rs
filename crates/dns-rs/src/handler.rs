@@ -10,6 +10,7 @@ use hickory_proto::op::{Edns, Message, OpCode, Query, ResponseCode};
 use crate::blocking::{BlockingMode, Policy, blocked_answer};
 use crate::cache::{CacheKey, DnsCache};
 use crate::filter::{Explanation, Verdict};
+use crate::forward::Forwards;
 use crate::local::LocalRecords;
 use crate::upstream::Upstream;
 
@@ -24,6 +25,8 @@ pub enum Source {
     Blocked,
     /// A local record (ADR 0016).
     Local,
+    /// The server of a forwarded domain (ADR 0017).
+    Forwarded,
     /// The request was invalid or unsupported (FORMERR, NOTIMP).
     Rejected,
     /// The upstream could not answer (SERVFAIL).
@@ -37,6 +40,7 @@ impl std::fmt::Display for Source {
             Self::Upstream => "upstream",
             Self::Blocked => "blocked",
             Self::Local => "local",
+            Self::Forwarded => "forwarded",
             Self::Rejected => "rejected",
             Self::Failed => "failed",
         })
@@ -54,6 +58,7 @@ pub struct Handler<U> {
     cache: DnsCache,
     policy: ArcSwap<Policy>,
     local: ArcSwap<LocalRecords>,
+    forwards: ArcSwap<Forwards<U>>,
 }
 
 impl<U: Upstream> Handler<U> {
@@ -64,6 +69,7 @@ impl<U: Upstream> Handler<U> {
             cache,
             policy: ArcSwap::from_pointee(Policy::allow_all()),
             local: ArcSwap::from_pointee(LocalRecords::default()),
+            forwards: ArcSwap::from_pointee(Forwards::default()),
         }
     }
 
@@ -81,6 +87,14 @@ impl<U: Upstream> Handler<U> {
     /// Replaces the local records; takes effect for the next query.
     pub fn set_local_records(&self, records: LocalRecords) {
         self.local.store(Arc::new(records));
+    }
+
+    /// Replaces the forwarded domains; takes effect for the next query.
+    /// Empties the cache: answers cached under the previous rules (such as
+    /// an upstream NXDOMAIN for a name now forwarded) must not outlive them.
+    pub fn set_forwards(&self, forwards: Forwards<U>) {
+        self.forwards.store(Arc::new(forwards));
+        self.cache.clear();
     }
 
     /// Answers `request`. Never fails: errors become DNS response codes.
@@ -113,10 +127,17 @@ impl<U: Upstream> Handler<U> {
             return resolved(answer(request, &cached), Source::Cache);
         }
 
-        match self.upstream.query(&upstream_query(question)).await {
+        // Held as an `Arc` across the query: a reload may replace the rules
+        // meanwhile.
+        let forwards = self.forwards.load_full();
+        let (server, source) = match forwards.route(&question.name().to_ascii()) {
+            Some(server) => (server, Source::Forwarded),
+            None => (&self.upstream, Source::Upstream),
+        };
+        match server.query(&upstream_query(question)).await {
             Ok(upstream) => {
                 self.cache.insert(key, &upstream, Instant::now());
-                resolved(answer(request, &upstream), Source::Upstream)
+                resolved(answer(request, &upstream), source)
             }
             Err(error) => {
                 tracing::warn!(%error, name = %question.name(), "upstream query failed");
@@ -191,10 +212,12 @@ mod tests {
     use crate::filter::{FilterBuilder, Rule};
     use crate::upstream::UpstreamError;
 
-    /// Upstream double answering every A query with 192.0.2.1, or failing.
+    /// Upstream double answering every A query with `address` (192.0.2.1
+    /// by default), or failing.
     #[derive(Default)]
     struct FakeUpstream {
         fail: bool,
+        address: Option<Ipv4Addr>,
         calls: AtomicUsize,
         last_query: Mutex<Option<Message>>,
     }
@@ -220,7 +243,7 @@ mod tests {
             response.add_answer(Record::from_rdata(
                 question.name().clone(),
                 300,
-                RData::A(A(Ipv4Addr::new(192, 0, 2, 1))),
+                RData::A(A(self.address.unwrap_or(Ipv4Addr::new(192, 0, 2, 1)))),
             ));
             response.add_query(question);
             Ok(response)
@@ -248,6 +271,129 @@ mod tests {
             filter: builder.build().unwrap(),
             mode,
         });
+    }
+
+    mod forwarding {
+        use super::*;
+        use crate::forward::Forwards;
+
+        const ROUTER: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
+
+        fn router() -> FakeUpstream {
+            FakeUpstream {
+                address: Some(ROUTER),
+                ..FakeUpstream::default()
+            }
+        }
+
+        fn forward_home(handler: &Handler<FakeUpstream>, server: FakeUpstream) {
+            handler.set_forwards(Forwards::new([("home.arpa", server)]));
+        }
+
+        // ADR 0017: the domain's server answers, and the upstream never
+        // sees the name.
+        #[tokio::test]
+        async fn forwarded_domain_is_answered_by_its_server() {
+            let handler = handler(FakeUpstream::default());
+            forward_home(&handler, router());
+
+            let resolution = handler.handle(&request(7, "nas.home.arpa.")).await;
+
+            assert_eq!(resolution.source, Source::Forwarded);
+            assert_eq!(resolution.response.metadata.id, 7);
+            assert_eq!(resolution.response.answers[0].data, RData::A(A(ROUTER)));
+            assert_eq!(handler.upstream.calls.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn other_names_still_go_to_the_upstream() {
+            let handler = handler(FakeUpstream::default());
+            forward_home(&handler, router());
+
+            let resolution = handler.handle(&request(1, "example.com.")).await;
+
+            assert_eq!(resolution.source, Source::Upstream);
+            assert_eq!(handler.upstream.calls.load(Ordering::SeqCst), 1);
+        }
+
+        // A private name must not leak to the public upstream.
+        #[tokio::test]
+        async fn a_failing_server_gives_servfail_without_trying_the_upstream() {
+            let handler = handler(FakeUpstream::default());
+            forward_home(
+                &handler,
+                FakeUpstream {
+                    fail: true,
+                    ..FakeUpstream::default()
+                },
+            );
+
+            let resolution = handler.handle(&request(1, "nas.home.arpa.")).await;
+
+            assert_eq!(resolution.source, Source::Failed);
+            assert_eq!(
+                resolution.response.metadata.response_code,
+                ResponseCode::ServFail
+            );
+            assert_eq!(handler.upstream.calls.load(Ordering::SeqCst), 0);
+        }
+
+        // Forwarding picks a server; it does not exempt a name from blocking.
+        #[tokio::test]
+        async fn blocking_applies_to_forwarded_domains() {
+            let handler = handler(FakeUpstream::default());
+            forward_home(&handler, router());
+            block(&handler, "tracker.home.arpa", BlockingMode::NxDomain);
+
+            let resolution = handler.handle(&request(1, "tracker.home.arpa.")).await;
+
+            assert_eq!(resolution.source, Source::Blocked);
+        }
+
+        #[tokio::test]
+        async fn local_records_win_over_forwarding() {
+            let handler = handler(FakeUpstream::default());
+            forward_home(&handler, router());
+            handler.set_local_records(LocalRecords::new(
+                [("nas.home.arpa", Ipv4Addr::new(192, 168, 1, 10).into())],
+                300,
+            ));
+
+            let resolution = handler.handle(&request(1, "nas.home.arpa.")).await;
+
+            assert_eq!(resolution.source, Source::Local);
+        }
+
+        #[tokio::test]
+        async fn forwarded_answers_are_cached() {
+            let handler = handler(FakeUpstream::default());
+            forward_home(&handler, router());
+
+            handler.handle(&request(1, "nas.home.arpa.")).await;
+            let resolution = handler.handle(&request(2, "nas.home.arpa.")).await;
+
+            assert_eq!(resolution.source, Source::Cache);
+            assert_eq!(resolution.response.answers[0].data, RData::A(A(ROUTER)));
+        }
+
+        // ADR 0017: an answer the upstream gave before the rule existed
+        // (often a long-lived NXDOMAIN) must not hide the new rule.
+        #[tokio::test]
+        async fn new_rules_apply_even_to_names_already_cached() {
+            let handler = handler(FakeUpstream::default());
+            handler.handle(&request(1, "nas.home.arpa.")).await;
+
+            forward_home(&handler, router());
+            let resolution = handler.handle(&request(2, "nas.home.arpa.")).await;
+
+            assert_eq!(resolution.source, Source::Forwarded);
+        }
+
+        // The query log prints it: log pipelines may match on it.
+        #[test]
+        fn forwarded_answers_are_named_forwarded_in_the_query_log() {
+            assert_eq!(Source::Forwarded.to_string(), "forwarded");
+        }
     }
 
     mod local_records {

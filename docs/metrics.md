@@ -67,7 +67,7 @@ The histogram has 16 buckets from 50 µs, doubling up to about 1.6 s.
 
 Label values:
 
-- `source`: `cache`, `upstream`, `blocked`, `local`, `rejected` or `failed` (the same
+- `source`: `cache`, `upstream`, `blocked`, `local`, `forwarded`, `rejected` or `failed` (the same
   values as in the [query log](logging.md#query-log)).
 - `rcode`: `NOERROR`, `FORMERR`, `SERVFAIL`, `NXDOMAIN`, `NOTIMP`,
   `REFUSED`, or `other`.
