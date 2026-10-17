@@ -67,7 +67,7 @@ It is TOML text, not a YAML map: Helm's `toToml` writes integers as floats
 
 Startup settings do not go in `config`. The chart fails to render if `config`
 holds a `[server]`, `[http]`, `[upstream]` or `[cache]` section (or a dotted
-key such as `cache.size`). Set `upstream.server`, `upstream.timeoutMs` and
+key or assignment such as `cache.size = 1` or `cache = { size = 1 }`). Set `upstream.server`, `upstream.timeoutMs` and
 `cache.size` in the values instead: the chart passes them to the pods as
 environment variables (`DNS_RS_UPSTREAM`, `DNS_RS_UPSTREAM_TIMEOUT_MS`,
 `DNS_RS_CACHE_SIZE`). The chart also sets `DNS_RS_LISTEN=0.0.0.0:5353` and
