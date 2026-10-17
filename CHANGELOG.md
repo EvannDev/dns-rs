@@ -60,11 +60,15 @@ All notable changes to dns-rs are documented here. The format is based on
 - Helm chart `charts/dns-rs`: a Deployment of stateless replicas (2 by
   default), a ConfigMap from `config` (TOML text), a DNS Service (53, UDP and
   TCP), an HTTP Service (8080), hardened pods and `values.schema.json`.
-  Configuration changes reach running pods through hot reload, without a
-  restart. Not published to a chart repository yet (#22).
+  `[blocking]` changes reach running pods through hot reload, without a
+  restart; upstream and cache settings are values passed as environment
+  variables, so a change rolls every replica. Not published to a chart repository yet (#22).
 
 ### Changed
 
+- dns-rs binds its HTTP server before loading blocklists: `/healthz` answers
+  while lists load and `/readyz` stays `503` until the first policy is
+  installed (#22).
 - The container image declares `USER 65532:65532` instead of the name
   `nonroot`, so Kubernetes can verify `runAsNonRoot` (#22).
 

@@ -12,8 +12,13 @@ rejects (checked with the binary, PR #22).
 
 ## Decision
 
-- `values.config` is a string holding the TOML file, copied into the
-  ConfigMap as is.
+- `values.config` is a string holding the reloaded part of the TOML file
+  (`[blocking]`), copied into the ConfigMap as is.
+- Startup settings (upstream server and timeout, cache size) are structured
+  values passed to the pods as environment variables, so a change edits the
+  pod template and rolls every replica. The chart fails if `config` holds
+  `[server]`, `[http]`, `[upstream]` or `[cache]`: a ConfigMap change would
+  only reach pods created later and replicas would run different values.
 - `values.schema.json` declares `config` as a string, so a YAML map fails at
   `helm install`.
 - The chart does not add a `checksum/config` annotation: dns-rs reloads
@@ -26,5 +31,5 @@ rejects (checked with the binary, PR #22).
 - Operators write the same TOML as in [Configuration](../configuration.md);
   the example file can be pasted.
 - Helm cannot override single keys with `--set`; override the whole text.
-- Changes to restart-only settings are not applied until pods are restarted
-  by hand.
+- Restart-only settings cannot be changed through the ConfigMap; they live
+  in values and a change rolls every replica.

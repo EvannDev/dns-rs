@@ -30,10 +30,13 @@ If the release name already contains `dns-rs`, the prefix is not repeated
 | `image.tag` | `""` | Image tag; empty means the chart's `appVersion` |
 | `image.pullPolicy` | `IfNotPresent` | `Always`, `IfNotPresent` or `Never` |
 | `imagePullSecrets` | `[]` | Pull secrets |
-| `config` | `[blocking]` with `mode = "null"` | The configuration file, as TOML text |
+| `upstream.server` | `1.1.1.1:53` | Upstream resolver (`DNS_RS_UPSTREAM`); the port defaults to 53 |
+| `upstream.timeoutMs` | `2000` | Upstream timeout in milliseconds (`DNS_RS_UPSTREAM_TIMEOUT_MS`) |
+| `cache.size` | `10000` | Maximum number of cached responses (`DNS_RS_CACHE_SIZE`) |
+| `config` | `[blocking]` with `mode = "null"` | The reloaded part of the configuration file, as TOML text |
 | `service.dns.type` | `ClusterIP` | `ClusterIP`, `NodePort` or `LoadBalancer` |
 | `service.dns.port` | `53` | Service port for DNS (UDP and TCP) |
-| `service.dns.externalTrafficPolicy` | `""` | `Cluster` or `Local`; empty leaves the Kubernetes default |
+| `service.dns.externalTrafficPolicy` | `""` | `Cluster` or `Local`; empty leaves the Kubernetes default; the schema rejects it on a `ClusterIP` Service |
 | `service.dns.annotations` | `{}` | Service annotations |
 | `service.http.type` | `ClusterIP` | `ClusterIP`, `NodePort` or `LoadBalancer` |
 | `service.http.port` | `8080` | Service port for HTTP |
@@ -46,7 +49,7 @@ and `helm lint`.
 
 ## Configuration
 
-`config` holds the contents of `dns-rs.toml` (see
+`config` holds the `[blocking]` part of `dns-rs.toml` (see
 [Configuration](configuration.md) and
 [`dns-rs.example.toml`](../dns-rs.example.toml)):
 
@@ -62,19 +65,25 @@ It is TOML text, not a YAML map: Helm's `toToml` writes integers as floats
 (`cache.size = 20000.0`), which dns-rs rejects. See
 [ADR 0014](adr/0014-helm-config-as-toml-text.md).
 
-The listen addresses come from the image (`DNS_RS_LISTEN=0.0.0.0:5353`,
-`DNS_RS_HTTP_LISTEN=0.0.0.0:8080`), which override `server.listen` and
-`http.listen` in the file; see [Container image](container.md#ports).
+Startup settings do not go in `config`. The chart fails to render if `config`
+holds a `[server]`, `[http]`, `[upstream]` or `[cache]` section (or a dotted
+key such as `cache.size`). Set `upstream.server`, `upstream.timeoutMs` and
+`cache.size` in the values instead: the chart passes them to the pods as
+environment variables (`DNS_RS_UPSTREAM`, `DNS_RS_UPSTREAM_TIMEOUT_MS`,
+`DNS_RS_CACHE_SIZE`). The chart also sets `DNS_RS_LISTEN=0.0.0.0:5353` and
+`DNS_RS_HTTP_LISTEN=0.0.0.0:8080` to match the container ports; see
+[Container image](container.md#ports).
 
 ### Changing the configuration
 
-The chart does not restart pods when `config` changes. dns-rs reads the
-mounted file every 10 seconds and applies `[blocking]` changes on the running
-pods; see [Reload without restart](configuration.md#reload-without-restart).
-The kubelet needs some time to refresh a mounted ConfigMap, so a change can
-take longer than 10 seconds to reach a pod. Restart-only settings
-(`upstream.*`, `cache.size`, `http.api_token_file`) are logged as needing a
-restart; run `kubectl rollout restart deployment/<name>` to apply them.
+A change to `config` does not restart pods. dns-rs reads the mounted file
+every 10 seconds and applies `[blocking]` changes on the running pods; see
+[Reload without restart](configuration.md#reload-without-restart). The kubelet
+needs some time to refresh a mounted ConfigMap, so a change can take longer
+than 10 seconds to reach a pod.
+
+A change to `upstream.*` or `cache.size` edits the pod template, so Kubernetes
+rolls every replica and they never run different values.
 
 ## Clients and the DNS Service
 
@@ -95,7 +104,9 @@ read-only root filesystem, no privilege escalation, all capabilities dropped
 and the `RuntimeDefault` seccomp profile. The user is numeric because the
 kubelet cannot check `runAsNonRoot` against a user name such as `nonroot`.
 The liveness probe uses `/healthz` and the readiness probe `/readyz`, both on
-the `http` port.
+the `http` port. dns-rs starts its HTTP server before it loads the blocklists
+(up to 30 seconds per list), so liveness answers while lists load and
+readiness stays `503` until the first policy is installed.
 
 ## Checks in CI
 
