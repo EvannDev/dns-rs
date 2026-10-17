@@ -4,6 +4,7 @@ metadata:
   name: {{ include "dns-rs.fullname" . }}-http
   labels:
     {{- include "dns-rs.labels" . | nindent 4 }}
+    app.kubernetes.io/component: http
   {{- with .Values.service.http.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}

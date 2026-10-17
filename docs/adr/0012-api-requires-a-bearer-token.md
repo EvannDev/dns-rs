@@ -1,6 +1,6 @@
 # 0012. The API requires a bearer token
 
-- Status: Accepted
+- Status: Accepted; token rotation amended by [0015](0015-api-token-file-is-reloaded.md)
 - Date: 2026-10-16
 
 ## Context

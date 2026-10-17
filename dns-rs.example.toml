@@ -20,7 +20,9 @@ listen = "0.0.0.0:8080"
 # The API (/api/v1/...) requires "Authorization: Bearer <token>" and is
 # disabled without a token. The token comes from DNS_RS_API_TOKEN or from
 # this file (a mounted Secret), at least 16 characters; never put it in this
-# TOML. Probes and metrics need no token. Example (default: none):
+# TOML. The file is read again on each reload, so rotating the token needs no
+# restart. Probes and metrics need no token. Override: DNS_RS_API_TOKEN_FILE
+# Example (default: none):
 # api_token_file = "/run/secrets/dns-rs/api-token"
 
 [upstream]

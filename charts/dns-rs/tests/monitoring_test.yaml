@@ -1,0 +1,47 @@
+suite: monitoring
+templates:
+  - templates/servicemonitor.yaml
+tests:
+  - it: needs Prometheus Operator, so is off by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: scrapes /metrics on the http service
+    set:
+      serviceMonitor.enabled: true
+      serviceMonitor.interval: 15s
+      serviceMonitor.labels: {release: prometheus}
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+      - equal:
+          path: metadata.labels.release
+          value: prometheus
+      - equal:
+          path: spec.endpoints
+          value: [{port: http, path: /metrics, interval: 15s}]
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: dns-rs
+            app.kubernetes.io/instance: RELEASE-NAME
+            app.kubernetes.io/component: http
+
+  # The network policy closes 8080 unless peers are listed: Prometheus would
+  # be blocked without any warning.
+  - it: refuses a ServiceMonitor that the network policy would block
+    set:
+      serviceMonitor.enabled: true
+      networkPolicy.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.http.from"
+
+  - it: accepts a ServiceMonitor when Prometheus is allowed in
+    set:
+      serviceMonitor.enabled: true
+      networkPolicy.enabled: true
+      networkPolicy.http.from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}}]
+    asserts:
+      - notFailedTemplate: {}

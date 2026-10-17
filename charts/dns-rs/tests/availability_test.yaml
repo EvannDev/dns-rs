@@ -1,0 +1,58 @@
+suite: availability
+templates:
+  - templates/pdb.yaml
+  - templates/deployment.yaml
+tests:
+  - it: keeps all but one replica during voluntary disruptions
+    template: templates/pdb.yaml
+    asserts:
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: dns-rs
+            app.kubernetes.io/instance: RELEASE-NAME
+
+  # With one replica, a budget would block node drains forever.
+  - it: has no disruption budget with a single replica
+    template: templates/pdb.yaml
+    set:
+      replicaCount: 1
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: can disable the disruption budget
+    template: templates/pdb.yaml
+    set:
+      podDisruptionBudget.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # ScheduleAnyway: spread when possible, still schedule on one node.
+  - it: spreads replicas across nodes
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints
+          value:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: dns-rs
+                  app.kubernetes.io/instance: RELEASE-NAME
+
+  - it: can disable spreading
+    template: templates/deployment.yaml
+    set:
+      topologySpread.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.topologySpreadConstraints

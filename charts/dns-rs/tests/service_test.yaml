@@ -41,3 +41,18 @@ tests:
       - equal:
           path: spec.ports
           value: [{name: http, port: 8080, targetPort: http, protocol: TCP}]
+
+  # The ServiceMonitor selects the http Service by this label.
+  - it: labels each service with its component
+    template: templates/service-http.yaml
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: http
+
+  - it: labels the DNS service with its component
+    template: templates/service-dns.yaml
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: dns

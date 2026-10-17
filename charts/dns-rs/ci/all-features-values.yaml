@@ -1,0 +1,13 @@
+# Every optional feature on, to validate the rendered manifests in CI.
+api:
+  token: ci-token-0123456789abcdef
+serviceMonitor:
+  enabled: true
+networkPolicy:
+  enabled: true
+  http:
+    from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}}]
+service:
+  dns:
+    type: LoadBalancer
+    externalTrafficPolicy: Local

@@ -13,10 +13,23 @@ use crate::blocking::Policy;
 use crate::config::ListConfig;
 use crate::config::{BlockingConfig, Config, ConfigError};
 use crate::handler::Handler;
+use crate::http::ApiTokenSlot;
 use crate::metrics::{Metrics, ReloadResult};
 use crate::sources::{FetchError, ListLoader, ListResult, ListStore};
 use crate::status::Status;
 use crate::upstream::Upstream;
+
+/// What reading the API token file again did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenChange {
+    /// Same token, or no token file to read.
+    Unchanged,
+    /// The new token is in force.
+    Rotated,
+    /// The file is missing or holds an invalid token; the previous token
+    /// stays in force.
+    Rejected(String),
+}
 
 /// What a configuration reload did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +48,7 @@ pub enum ConfigChange {
 /// mounted `ConfigMap` within about a minute, so a few seconds is plenty.
 pub const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
-type Lookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 pub struct Reloader<U> {
     handler: Arc<Handler<U>>,
@@ -50,9 +63,54 @@ pub struct Reloader<U> {
     /// The last rejection logged, to log a broken file once, not every poll.
     last_rejection: Option<String>,
     store: ListStore,
+    api_token: Option<ApiTokenSlot>,
+    /// The last token rejection logged, to log a broken file once.
+    last_token_rejection: Option<String>,
 }
 
 impl<U: Upstream> Reloader<U> {
+    /// Also keeps `slot` in step with the API token file, if one is set.
+    #[must_use]
+    pub fn with_api_token(mut self, slot: ApiTokenSlot) -> Self {
+        self.api_token = Some(slot);
+        self
+    }
+
+    /// Reads the API token again: a rotated Secret, mounted as a file,
+    /// reaches every replica without a restart.
+    pub async fn reload_api_token(&mut self) -> TokenChange {
+        let Some(slot) = &self.api_token else {
+            return TokenChange::Unchanged;
+        };
+        let (config, lookup) = (self.active.clone(), Arc::clone(&self.lookup));
+        // File I/O off the runtime threads, as for the configuration.
+        let read = tokio::task::spawn_blocking(move || {
+            config
+                .api_token(lookup.as_ref())
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap_or_else(|error| Err(format!("reading the API token failed: {error}")));
+        let token = match read {
+            Ok(token) => token,
+            Err(reason) => {
+                if self.last_token_rejection.as_ref() != Some(&reason) {
+                    // The message names the source, never the token.
+                    tracing::error!(error = %reason, "API token rejected, keeping the previous one");
+                    self.last_token_rejection = Some(reason.clone());
+                }
+                return TokenChange::Rejected(reason);
+            }
+        };
+        self.last_token_rejection = None;
+        if token.is_none() || **slot.load() == token {
+            return TokenChange::Unchanged;
+        }
+        slot.store(Arc::new(token));
+        tracing::info!("API token rotated");
+        TokenChange::Rotated
+    }
+
     /// Loads the blocklists of `config` and installs the first policy.
     /// `lookup` reads environment variables, as [`Config::load`] does.
     pub async fn start(
@@ -75,11 +133,13 @@ impl<U: Upstream> Reloader<U> {
             metrics,
             status,
             loader,
-            lookup: Box::new(lookup),
+            lookup: Arc::new(lookup),
             active: config.clone(),
             last_seen: config,
             last_rejection: None,
             store,
+            api_token: None,
+            last_token_rejection: None,
         })
     }
 
@@ -91,9 +151,12 @@ impl<U: Upstream> Reloader<U> {
 
     /// Reads the configuration again and applies its blocking settings.
     pub async fn reload_config(&mut self) -> ConfigChange {
-        let next = match Config::load(&self.lookup) {
-            Ok(next) => next,
-            Err(error) => return self.reject(error.to_string()),
+        // File I/O off the runtime threads: a slow volume must not stall them.
+        let lookup = Arc::clone(&self.lookup);
+        let next = match tokio::task::spawn_blocking(move || Config::load(lookup.as_ref())).await {
+            Ok(Ok(next)) => next,
+            Ok(Err(error)) => return self.reject(error.to_string()),
+            Err(error) => return self.reject(format!("reading the configuration failed: {error}")),
         };
         self.last_rejection = None;
         // Valid again, even if identical to the last configuration seen.
@@ -186,11 +249,13 @@ impl<U: Upstream> Reloader<U> {
             tokio::select! {
                 _ = poll_timer.tick() => {
                     self.reload_config().await;
+                    self.reload_api_token().await;
                 }
                 message = reload_now.recv() => match message {
                     Some(()) => {
                         tracing::info!("reload requested");
                         self.reload_config().await;
+                        self.reload_api_token().await;
                     }
                     None => return,
                 },
@@ -339,10 +404,25 @@ mod tests {
         }
 
         async fn reloader(&self) -> (Reloader<NoUpstream>, Arc<Handler<NoUpstream>>) {
+            self.reloader_with_env(&[]).await
+        }
+
+        /// A reloader that also sees the environment variables `env`.
+        async fn reloader_with_env(
+            &self,
+            env: &[(&str, &str)],
+        ) -> (Reloader<NoUpstream>, Arc<Handler<NoUpstream>>) {
             let handler = Arc::new(Handler::new(NoUpstream, DnsCache::new(10)));
             let config_path = self.path("dns-rs.toml");
+            let env: Vec<(String, String)> = env
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
             let lookup = move |var: &str| {
-                (var == "DNS_RS_CONFIG").then(|| config_path.display().to_string())
+                if var == "DNS_RS_CONFIG" {
+                    return Some(config_path.display().to_string());
+                }
+                env.iter().find(|(k, _)| k == var).map(|(_, v)| v.clone())
             };
             let config = Config::load(&lookup).unwrap();
             let loader = ListLoader::new(Limits::default()).unwrap();
@@ -924,6 +1004,146 @@ mod tests {
 
             assert!(!broken);
             assert!(setup.status.report().config.valid);
+        }
+    }
+
+    mod api_token {
+        use arc_swap::ArcSwap;
+
+        use super::*;
+
+        const OLD: &str = "old-token-0123456789";
+        const NEW: &str = "new-token-0123456789";
+        const ENV: &str = "env-token-0123456789";
+
+        async fn reloader_with_token(setup: &Setup) -> (Reloader<NoUpstream>, ApiTokenSlot) {
+            setup.write("token", OLD);
+            setup.config(&format!(
+                "[http]\napi_token_file = '{}'",
+                setup.path("token").display()
+            ));
+            let (reloader, _handler) = setup.reloader().await;
+            let config = reloader.config().clone();
+            let slot: ApiTokenSlot =
+                Arc::new(ArcSwap::from_pointee(config.api_token(|_| None).unwrap()));
+            (reloader.with_api_token(Arc::clone(&slot)), slot)
+        }
+
+        fn current(slot: &ApiTokenSlot) -> Option<String> {
+            let token = slot.load();
+            [OLD, NEW]
+                .into_iter()
+                .find(|t| token.as_ref().as_ref().is_some_and(|k| k.matches(t)))
+                .map(str::to_owned)
+        }
+
+        #[tokio::test]
+        async fn rotated_token_file_takes_effect() {
+            let setup = Setup::new();
+            let (mut reloader, slot) = reloader_with_token(&setup).await;
+
+            setup.write("token", NEW);
+            let change = reloader.reload_api_token().await;
+
+            assert_eq!(change, TokenChange::Rotated);
+            assert_eq!(current(&slot).as_deref(), Some(NEW));
+        }
+
+        // DNS_RS_API_TOKEN wins over the file and is fixed for the process
+        // lifetime (ADR 0015): a file rotated next to it changes nothing.
+        #[tokio::test]
+        async fn environment_token_stays_fixed_when_the_file_changes() {
+            let setup = Setup::new();
+            setup.write("token", OLD);
+            setup.config(&format!(
+                "[http]\napi_token_file = '{}'",
+                setup.path("token").display()
+            ));
+            let (reloader, _handler) = setup.reloader_with_env(&[("DNS_RS_API_TOKEN", ENV)]).await;
+            let config = reloader.config().clone();
+            let slot: ApiTokenSlot = Arc::new(ArcSwap::from_pointee(
+                config
+                    .api_token(|var| (var == "DNS_RS_API_TOKEN").then(|| ENV.to_owned()))
+                    .unwrap(),
+            ));
+            let mut reloader = reloader.with_api_token(Arc::clone(&slot));
+
+            setup.write("token", NEW);
+            let change = reloader.reload_api_token().await;
+
+            assert_eq!(change, TokenChange::Unchanged);
+            assert!(
+                slot.load()
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(|t| t.matches(ENV))
+            );
+        }
+
+        #[tokio::test]
+        async fn same_token_is_unchanged() {
+            let setup = Setup::new();
+            let (mut reloader, slot) = reloader_with_token(&setup).await;
+
+            assert_eq!(reloader.reload_api_token().await, TokenChange::Unchanged);
+            assert_eq!(current(&slot).as_deref(), Some(OLD));
+        }
+
+        #[tokio::test]
+        async fn invalid_rotated_token_keeps_the_previous_one() {
+            let setup = Setup::new();
+            let (mut reloader, slot) = reloader_with_token(&setup).await;
+
+            setup.write("token", "short");
+            let change = reloader.reload_api_token().await;
+
+            assert!(
+                matches!(&change, TokenChange::Rejected(reason) if reason.contains("16")),
+                // Not the change itself: test output must not echo token data.
+                "expected a rejection naming the 16-character minimum"
+            );
+            assert_eq!(current(&slot).as_deref(), Some(OLD));
+        }
+
+        // A Secret being recreated briefly removes the file: keep serving.
+        #[tokio::test]
+        async fn missing_token_file_keeps_the_previous_token() {
+            let setup = Setup::new();
+            let (mut reloader, slot) = reloader_with_token(&setup).await;
+
+            remove(&setup.path("token"));
+            let change = reloader.reload_api_token().await;
+
+            assert!(
+                matches!(change, TokenChange::Rejected(_)),
+                "expected rejected token change"
+            );
+            assert_eq!(current(&slot).as_deref(), Some(OLD));
+        }
+
+        #[tokio::test]
+        async fn without_a_slot_nothing_is_read() {
+            let setup = Setup::new();
+            setup.config("");
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            assert_eq!(reloader.reload_api_token().await, TokenChange::Unchanged);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn token_is_read_again_at_each_poll() {
+            let setup = Setup::new();
+            let (reloader, slot) = reloader_with_token(&setup).await;
+            let (_reload_now, receiver) = mpsc::channel(1);
+            tokio::spawn(reloader.run(Duration::from_secs(10), receiver));
+
+            setup.write("token", NEW);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(11);
+            while tokio::time::Instant::now() < deadline && current(&slot).as_deref() != Some(NEW) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+
+            assert_eq!(current(&slot).as_deref(), Some(NEW));
         }
     }
 }

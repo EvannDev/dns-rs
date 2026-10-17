@@ -16,6 +16,10 @@ The chart creates:
 | ConfigMap | `<release>-dns-rs` | `dns-rs.toml`, from `config`, mounted at `/etc/dns-rs` |
 | Service | `<release>-dns-rs-dns` | DNS on `service.dns.port` (default 53), UDP and TCP, to container port 5353 |
 | Service | `<release>-dns-rs-http` | Probes, metrics and API on `service.http.port` (default 8080) |
+| Secret | `<release>-dns-rs-api` | The API token, only when `api.token` is set |
+| PodDisruptionBudget | `<release>-dns-rs` | `maxUnavailable` pods, only with `podDisruptionBudget.enabled` and more than one replica |
+| ServiceMonitor | `<release>-dns-rs` | Scrapes `/metrics` of the http Service, only with `serviceMonitor.enabled` |
+| NetworkPolicy | `<release>-dns-rs` | Ingress rules, only with `networkPolicy.enabled` |
 
 If the release name already contains `dns-rs`, the prefix is not repeated
 (release `dns-rs` gives `dns-rs`, `dns-rs-dns` and `dns-rs-http`). Run
@@ -41,6 +45,18 @@ If the release name already contains `dns-rs`, the prefix is not repeated
 | `service.http.type` | `ClusterIP` | `ClusterIP`, `NodePort` or `LoadBalancer` |
 | `service.http.port` | `8080` | Service port for HTTP |
 | `service.http.annotations` | `{}` | Service annotations |
+| `api.token` | `""` | API token, at least 16 characters (the schema rejects shorter ones); the chart stores it in a Secret. Prefer `api.existingSecret`: a token in values ends up in Helm's release history |
+| `api.existingSecret` | `""` | Name of a Secret you manage; set it or `api.token`, not both (the chart fails to render otherwise) |
+| `api.existingSecretKey` | `token` | Key of the token in `api.existingSecret` |
+| `podDisruptionBudget.enabled` | `true` | Renders a PodDisruptionBudget, only with more than one replica |
+| `podDisruptionBudget.maxUnavailable` | `1` | Pods that may be unavailable during voluntary disruptions |
+| `topologySpread.enabled` | `true` | Spreads replicas across nodes (`kubernetes.io/hostname`, `maxSkew: 1`, `ScheduleAnyway`) |
+| `serviceMonitor.enabled` | `false` | Renders a Prometheus Operator ServiceMonitor for `/metrics` |
+| `serviceMonitor.interval` | `30s` | Scrape interval |
+| `serviceMonitor.labels` | `{}` | Extra labels, for example to match a Prometheus `serviceMonitorSelector` |
+| `networkPolicy.enabled` | `false` | Renders a NetworkPolicy (ingress only) |
+| `networkPolicy.dns.from` | `[]` | NetworkPolicyPeers allowed to query DNS (port 5353); empty means everyone |
+| `networkPolicy.http.from` | `[]` | NetworkPolicyPeers allowed on port 8080 (metrics, API); empty means nobody |
 | `resources` | requests 50m CPU and 128Mi memory, limit 256Mi memory | Container resources |
 | `podAnnotations`, `podLabels`, `nodeSelector`, `tolerations`, `affinity` | empty | Passed to the pod template |
 
@@ -93,9 +109,36 @@ keep client IP addresses, which the query log shows
 to the Internet: an open resolver is abused for amplification attacks. See
 the warning in [Container image](container.md#run).
 
-The chart does not provision an API token yet, so `/api/*` answers `403` (see
+## API token
+
+Without `api.token` or `api.existingSecret`, `/api/*` answers `403` (see
 [Authentication](metrics.md#authentication)). `/healthz`, `/readyz` and
 `/metrics` work without it.
+
+The chart mounts the Secret as a file at `/run/secrets/dns-rs/api-token` and
+sets `DNS_RS_API_TOKEN_FILE` to that path. The token is not in the pod spec.
+dns-rs reads the file again every 10 seconds, so a rotated Secret reaches
+every replica after the kubelet refreshes the mounted file (about a minute),
+without restarting pods; this applies to chart-managed and existing Secrets
+alike. See [ADR 0015](adr/0015-api-token-file-is-reloaded.md). Removing the
+token does not disable the API until pods restart.
+
+## Availability and network
+
+- With more than one replica, the PodDisruptionBudget keeps all but
+  `maxUnavailable` pods up during node drains. With one replica it is not
+  rendered, so it never blocks a drain.
+- Replicas are spread across nodes when possible; `ScheduleAnyway` means the
+  scheduler still places them together if it has to.
+- The ServiceMonitor selects the http Service through the label
+  `app.kubernetes.io/component: http`, which both Services now carry. It needs
+  the Prometheus Operator CRDs. With `networkPolicy.enabled`, the chart fails
+  to render unless `networkPolicy.http.from` lets Prometheus reach port 8080.
+- The NetworkPolicy restricts ingress only; egress stays open because dns-rs
+  queries its upstream and downloads blocklists. DNS is open to everyone unless
+  `networkPolicy.dns.from` lists peers; port 8080 is closed unless
+  `networkPolicy.http.from` lists peers. Kubelet probes come from the node and
+  are usually allowed by the CNI regardless.
 
 ## Pod security
 
@@ -112,4 +155,5 @@ readiness stays `503` until the first policy is installed.
 
 The `chart` job runs `helm lint`, the helm-unittest suites in
 `charts/dns-rs/tests` and `kubeconform -strict` against Kubernetes 1.34 on
-the rendered manifests.
+the rendered manifests, with the default values and with every feature on
+(`charts/dns-rs/ci/all-features-values.yaml`).

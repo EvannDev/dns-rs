@@ -1,0 +1,130 @@
+suite: API token
+templates:
+  - templates/deployment.yaml
+  - templates/secret.yaml
+tests:
+  - it: leaves the API disabled by default
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content: {name: DNS_RS_API_TOKEN_FILE}
+      - notContains:
+          path: spec.template.spec.volumes
+          any: true
+          content: {name: api-token}
+
+  - it: creates no Secret by default
+    template: templates/secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: stores a given token in a Secret
+    template: templates/secret.yaml
+    set:
+      api.token: chart-token-0123456789
+    asserts:
+      - isKind:
+          of: Secret
+      - equal:
+          path: data.token
+          value: Y2hhcnQtdG9rZW4tMDEyMzQ1Njc4OQ==
+
+  # Mounted as a file, which the kubelet updates when the Secret changes and
+  # dns-rs reads again: rotation reaches every replica without a restart.
+  - it: mounts the token as a file dns-rs reads again
+    template: templates/deployment.yaml
+    set:
+      api.token: chart-token-0123456789
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: api-token
+            secret:
+              secretName: RELEASE-NAME-dns-rs-api
+              items: [{key: token, path: api-token}]
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: {name: api-token, mountPath: /run/secrets/dns-rs, readOnly: true}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DNS_RS_API_TOKEN_FILE, value: /run/secrets/dns-rs/api-token}
+
+  # Anyone allowed to get pods could attack a hash of the token offline.
+  - it: puts nothing derived from the token in the pod spec
+    template: templates/deployment.yaml
+    set:
+      api.token: chart-token-0123456789
+    asserts:
+      - notExists:
+          path: spec.template.metadata.annotations
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content: {name: DNS_RS_API_TOKEN}
+
+  - it: keeps the pod annotations given in values
+    template: templates/deployment.yaml
+    set:
+      api.token: chart-token-0123456789
+      podAnnotations: {team: network}
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations
+          value: {team: network}
+
+  - it: mounts an existing Secret under the default key
+    template: templates/deployment.yaml
+    set:
+      api.existingSecret: my-dns-rs-token
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: api-token
+            secret:
+              secretName: my-dns-rs-token
+              items: [{key: token, path: api-token}]
+
+  - it: mounts an existing Secret under the given key
+    template: templates/deployment.yaml
+    set:
+      api.existingSecret: my-dns-rs-token
+      api.existingSecretKey: api-token
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: api-token
+            secret:
+              secretName: my-dns-rs-token
+              items: [{key: api-token, path: api-token}]
+
+  - it: creates no Secret when an existing one is used
+    template: templates/secret.yaml
+    set:
+      api.existingSecret: my-dns-rs-token
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: refuses both a token and an existing Secret
+    template: templates/deployment.yaml
+    set:
+      api.token: chart-token-0123456789
+      api.existingSecret: my-dns-rs-token
+    asserts:
+      - failedTemplate:
+          errorPattern: "api.token"
+
+  - it: refuses an empty key for an existing Secret
+    template: templates/deployment.yaml
+    set:
+      api.existingSecret: my-dns-rs-token
+      api.existingSecretKey: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "existingSecretKey"

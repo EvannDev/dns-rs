@@ -1,0 +1,31 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dns-rs.fullname" . }}
+  labels:
+    {{- include "dns-rs.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "dns-rs.selectorLabels" . | nindent 6 }}
+  # Ingress only: dns-rs must reach its upstream and the blocklists.
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 5353
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+      {{- with .Values.networkPolicy.dns.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.networkPolicy.http.from }}
+    - ports:
+        - port: 8080
+          protocol: TCP
+      from:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+{{- end }}

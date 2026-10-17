@@ -14,6 +14,8 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 
 use crate::blocking::BlockingMode;
+use arc_swap::ArcSwap;
+
 use crate::config::ApiToken;
 use crate::filter::{Match, Verdict};
 use crate::handler::PolicyView;
@@ -26,19 +28,22 @@ pub struct HttpState {
     metrics: Arc<Metrics>,
     policy: Arc<dyn PolicyView>,
     status: Arc<Status>,
-    api_token: Option<ApiToken>,
+    api_token: ApiTokenSlot,
     ready: Arc<AtomicBool>,
 }
 
+/// The API token in force, swapped by the Reloader when its file changes.
+pub type ApiTokenSlot = Arc<ArcSwap<Option<ApiToken>>>;
+
 impl HttpState {
-    /// `api_token`: the token `/api/*` requests must present; without one,
-    /// the API is disabled.
+    /// `api_token`: the token `/api/*` requests must present, read at each
+    /// request; without one, the API is disabled.
     #[must_use]
     pub fn new(
         metrics: Arc<Metrics>,
         policy: Arc<dyn PolicyView>,
         status: Arc<Status>,
-        api_token: Option<ApiToken>,
+        api_token: ApiTokenSlot,
     ) -> Self {
         Self {
             metrics,
@@ -135,7 +140,8 @@ async fn api_not_found() -> Response {
 /// Lets a request through only if it carries `Authorization: Bearer <token>`
 /// with the configured token; without a configured token, the API is off.
 async fn require_token(State(state): State<HttpState>, request: Request, next: Next) -> Response {
-    let Some(token) = &state.api_token else {
+    let token = state.api_token.load();
+    let Some(token) = token.as_ref() else {
         let error = "the API is disabled: set DNS_RS_API_TOKEN or http.api_token_file".to_owned();
         return (StatusCode::FORBIDDEN, Json(ErrorResponse { error })).into_response();
     };

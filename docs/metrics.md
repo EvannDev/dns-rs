@@ -31,6 +31,15 @@ characters, otherwise dns-rs exits at startup without printing the token. It
 is not a TOML key, because the configuration file often ends up in a
 ConfigMap. Changing `http.api_token_file` needs a restart.
 
+dns-rs reads the token file again at each configuration poll (10 seconds) and
+on `SIGHUP`, so a rotated token applies without a restart and logs `API token
+rotated` (never the token). If the file is missing or the new token is invalid
+(for example shorter than 16 characters), dns-rs keeps the previous token and
+logs `API token rejected, keeping the previous one` once. Removing the token
+does not disable the API until a restart. A token set with `DNS_RS_API_TOKEN`
+stays fixed for the life of the process. See
+[ADR 0015](adr/0015-api-token-file-is-reloaded.md).
+
 Without a token the API is disabled: every request under `/api/` gets `403`,
 and dns-rs logs `API disabled: set DNS_RS_API_TOKEN or http.api_token_file to
 enable it` at startup. See [ADR 0012](adr/0012-api-requires-a-bearer-token.md).
