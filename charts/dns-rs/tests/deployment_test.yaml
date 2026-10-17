@@ -183,6 +183,26 @@ tests:
     asserts:
       - notFailedTemplate: {}
 
+  # ADR 0016: local records apply live too.
+  - it: accepts local records in the reloaded configuration
+    set:
+      config: |
+        [blocking]
+        deny = ["ads.example.com"]
+        [local]
+        records = [{ name = "nas.home.arpa", ip = "192.168.1.10" }]
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: names the sections it accepts when refusing one
+    set:
+      config: |
+        [server]
+        listen = "0.0.0.0:53"
+    asserts:
+      - failedTemplate:
+          errorPattern: "only hold \\[blocking\\] and \\[local\\]"
+
   - it: uses the pull policy and resources from values
     set:
       image.pullPolicy: Always

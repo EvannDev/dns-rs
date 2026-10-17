@@ -10,6 +10,7 @@ use hickory_proto::op::{Edns, Message, OpCode, Query, ResponseCode};
 use crate::blocking::{BlockingMode, Policy, blocked_answer};
 use crate::cache::{CacheKey, DnsCache};
 use crate::filter::{Explanation, Verdict};
+use crate::local::LocalRecords;
 use crate::upstream::Upstream;
 
 /// UDP payload size advertised to EDNS clients (DNS flag day 2020).
@@ -21,6 +22,8 @@ pub enum Source {
     Cache,
     Upstream,
     Blocked,
+    /// A local record (ADR 0016).
+    Local,
     /// The request was invalid or unsupported (FORMERR, NOTIMP).
     Rejected,
     /// The upstream could not answer (SERVFAIL).
@@ -33,6 +36,7 @@ impl std::fmt::Display for Source {
             Self::Cache => "cache",
             Self::Upstream => "upstream",
             Self::Blocked => "blocked",
+            Self::Local => "local",
             Self::Rejected => "rejected",
             Self::Failed => "failed",
         })
@@ -49,6 +53,7 @@ pub struct Handler<U> {
     upstream: U,
     cache: DnsCache,
     policy: ArcSwap<Policy>,
+    local: ArcSwap<LocalRecords>,
 }
 
 impl<U: Upstream> Handler<U> {
@@ -58,6 +63,7 @@ impl<U: Upstream> Handler<U> {
             upstream,
             cache,
             policy: ArcSwap::from_pointee(Policy::allow_all()),
+            local: ArcSwap::from_pointee(LocalRecords::default()),
         }
     }
 
@@ -72,6 +78,11 @@ impl<U: Upstream> Handler<U> {
         self.policy.store(Arc::new(policy));
     }
 
+    /// Replaces the local records; takes effect for the next query.
+    pub fn set_local_records(&self, records: LocalRecords) {
+        self.local.store(Arc::new(records));
+    }
+
     /// Answers `request`. Never fails: errors become DNS response codes.
     pub async fn handle(&self, request: &Message) -> Resolution {
         if request.metadata.op_code != OpCode::Query {
@@ -80,6 +91,14 @@ impl<U: Upstream> Handler<U> {
         let [question] = request.queries.as_slice() else {
             return resolved(reply(request, ResponseCode::FormErr), Source::Rejected);
         };
+
+        // Before blocking: a name given an address on purpose is not blocked.
+        if let Some(answers) = self.local.load().answer(question) {
+            let mut response = reply(request, ResponseCode::NoError);
+            response.metadata.authoritative = true;
+            response.answers = answers;
+            return resolved(response, Source::Local);
+        }
 
         let policy = self.policy.load();
         if policy.filter.check(&question.name().to_ascii()) == Verdict::Blocked {
@@ -229,6 +248,106 @@ mod tests {
             filter: builder.build().unwrap(),
             mode,
         });
+    }
+
+    mod local_records {
+        use std::net::IpAddr;
+
+        use super::*;
+        use crate::local::LocalRecords;
+
+        const NAS: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+
+        fn with_nas(handler: &Handler<FakeUpstream>) {
+            handler.set_local_records(LocalRecords::new([("nas.home.arpa", NAS)], 300));
+        }
+
+        fn typed(id: u16, domain: &str, record_type: RecordType) -> Message {
+            let mut msg = request(id, domain);
+            msg.queries[0].set_query_type(record_type);
+            msg
+        }
+
+        // ADR 0016: dns-rs alone answers, authoritatively, without the
+        // upstream or the cache.
+        #[tokio::test]
+        async fn local_name_is_answered_authoritatively_without_the_upstream() {
+            let handler = handler(FakeUpstream::default());
+            with_nas(&handler);
+
+            let resolution = handler.handle(&request(7, "nas.home.arpa.")).await;
+
+            let response = &resolution.response;
+            assert_eq!(resolution.source, Source::Local);
+            assert_eq!(response.metadata.id, 7);
+            assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+            assert!(response.metadata.authoritative);
+            assert!(response.metadata.recursion_available);
+            assert_eq!(
+                response.answers[0].data,
+                RData::A(A(Ipv4Addr::new(192, 168, 1, 10)))
+            );
+            assert_eq!(response.queries, request(7, "nas.home.arpa.").queries);
+            assert_eq!(handler.upstream.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(handler.cached_responses(), 0);
+        }
+
+        // A name the operator gave an address on purpose is not blocked.
+        #[tokio::test]
+        async fn local_name_wins_over_a_deny_rule() {
+            let handler = handler(FakeUpstream::default());
+            with_nas(&handler);
+            block(&handler, "*.home.arpa", BlockingMode::NxDomain);
+
+            let resolution = handler.handle(&request(1, "nas.home.arpa.")).await;
+
+            assert_eq!(resolution.source, Source::Local);
+            assert_eq!(resolution.response.answers.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn other_type_of_a_local_name_gets_an_empty_noerror() {
+            let handler = handler(FakeUpstream::default());
+            with_nas(&handler);
+
+            let resolution = handler
+                .handle(&typed(1, "nas.home.arpa.", RecordType::MX))
+                .await;
+
+            assert_eq!(resolution.source, Source::Local);
+            assert_eq!(
+                resolution.response.metadata.response_code,
+                ResponseCode::NoError
+            );
+            assert_eq!(resolution.response.answers, []);
+        }
+
+        #[tokio::test]
+        async fn names_that_are_not_local_are_still_forwarded() {
+            let handler = handler(FakeUpstream::default());
+            with_nas(&handler);
+
+            let resolution = handler.handle(&request(1, "x.nas.home.arpa.")).await;
+
+            assert_eq!(resolution.source, Source::Upstream);
+        }
+
+        // The query log prints it: log pipelines may match on it.
+        #[test]
+        fn local_answers_are_named_local_in_the_query_log() {
+            assert_eq!(Source::Local.to_string(), "local");
+        }
+
+        #[tokio::test]
+        async fn replaced_records_apply_to_the_next_query() {
+            let handler = handler(FakeUpstream::default());
+            with_nas(&handler);
+
+            handler.set_local_records(LocalRecords::default());
+            let resolution = handler.handle(&request(1, "nas.home.arpa.")).await;
+
+            assert_eq!(resolution.source, Source::Upstream);
+        }
     }
 
     #[tokio::test]

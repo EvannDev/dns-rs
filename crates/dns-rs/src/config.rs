@@ -14,6 +14,7 @@ use subtle::ConstantTimeEq;
 use crate::blocking::{BlockingMode, Policy};
 use crate::filter::{FilterBuilder, Rule};
 use crate::lists::{BareDomains, ParsedList, is_valid_domain};
+use crate::local::{self, LocalRecords};
 
 const DNS_PORT: u16 = 53;
 
@@ -29,6 +30,7 @@ pub struct Config {
     pub upstream: UpstreamConfig,
     pub cache: CacheConfig,
     pub blocking: BlockingConfig,
+    pub local: LocalConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -119,6 +121,45 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self { size: 10_000 }
     }
+}
+
+/// Names dns-rs answers itself (ADR 0016); applies live.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LocalConfig {
+    /// TTL of local answers, in seconds.
+    pub ttl: u32,
+    pub records: Vec<LocalRecordConfig>,
+}
+
+impl Default for LocalConfig {
+    fn default() -> Self {
+        Self {
+            ttl: local::DEFAULT_TTL,
+            records: Vec::new(),
+        }
+    }
+}
+
+impl LocalConfig {
+    /// The records to answer, in the form the handler looks them up.
+    #[must_use]
+    pub fn records(&self) -> LocalRecords {
+        LocalRecords::new(
+            self.records
+                .iter()
+                .map(|record| (record.name.as_str(), record.ip)),
+            self.ttl,
+        )
+    }
+}
+
+/// One name and one address; the address family gives the record type.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalRecordConfig {
+    pub name: String,
+    pub ip: IpAddr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -432,6 +473,14 @@ impl Config {
         if self.upstream.timeout.is_zero() {
             return Err(invalid("upstream.timeout", "must be greater than zero"));
         }
+        for record in &self.local.records {
+            if !is_valid_domain(&record.name) {
+                return Err(invalid(
+                    "local.records",
+                    format!("{:?} is not a domain of at least two labels", record.name),
+                ));
+            }
+        }
         if self.blocking.refresh < MIN_REFRESH {
             return Err(invalid("blocking.refresh", "must be at least 1 minute"));
         }
@@ -722,6 +771,76 @@ mod tests {
 
         assert!(error.contains("allow"), "{error}");
         assert!(error.contains("not a domain"), "{error}");
+    }
+
+    mod local {
+        use hickory_proto::op::Query;
+        use hickory_proto::rr::{Name, RecordType};
+
+        use super::*;
+        use crate::local::DEFAULT_TTL;
+
+        fn question(name: &str) -> Query {
+            Query::query(Name::from_ascii(name).unwrap(), RecordType::A)
+        }
+
+        #[test]
+        fn records_come_from_the_local_section() {
+            let config = Config::from_toml(
+                "[local]\nttl = 60\nrecords = [\n\
+                 { name = 'nas.home.arpa', ip = '192.168.1.10' },\n\
+                 { name = 'nas.home.arpa', ip = 'fd00::10' },\n]",
+            )
+            .unwrap();
+
+            let records = config.local.records();
+            let answers = records.answer(&question("nas.home.arpa.")).unwrap();
+            assert_eq!(answers.len(), 1);
+            assert_eq!(answers[0].ttl, 60);
+        }
+
+        #[test]
+        fn no_local_section_means_no_records_and_the_default_ttl() {
+            let config = Config::from_toml("").unwrap();
+
+            assert!(config.local.records().is_empty());
+            assert_eq!(config.local.ttl, DEFAULT_TTL);
+        }
+
+        #[test]
+        fn invalid_name_is_rejected_and_named() {
+            let error =
+                invalid("[local]\nrecords = [{ name = 'not a name', ip = '192.168.1.10' }]");
+
+            assert!(error.contains("local.records"), "{error}");
+            assert!(error.contains("not a name"), "{error}");
+        }
+
+        // ADR 0016: clients append their search domain to single labels.
+        #[test]
+        fn single_label_name_is_rejected() {
+            let error = invalid("[local]\nrecords = [{ name = 'nas', ip = '192.168.1.10' }]");
+
+            assert!(error.contains("local.records"), "{error}");
+            assert!(error.contains("\"nas\""), "{error}");
+        }
+
+        #[test]
+        fn invalid_address_is_rejected_with_its_position() {
+            let error =
+                invalid("[local]\nrecords = [{ name = 'nas.home.arpa', ip = '192.168.1.300' }]");
+
+            assert!(error.contains("line 2"), "{error}");
+            assert!(error.contains("address"), "{error}");
+        }
+
+        #[test]
+        fn unknown_record_field_is_rejected() {
+            let error =
+                invalid("[local]\nrecords = [{ name = 'nas.home.arpa', addr = '192.168.1.10' }]");
+
+            assert!(error.contains("addr"), "{error}");
+        }
     }
 
     #[test]

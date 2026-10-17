@@ -7,6 +7,7 @@ pub mod filter;
 pub mod handler;
 pub mod http;
 pub mod lists;
+pub mod local;
 pub mod metrics;
 pub mod query_log;
 pub mod reload;

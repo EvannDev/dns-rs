@@ -206,6 +206,7 @@ fn source_label(source: Source) -> &'static str {
         Source::Cache => "cache",
         Source::Upstream => "upstream",
         Source::Blocked => "blocked",
+        Source::Local => "local",
         Source::Rejected => "rejected",
         Source::Failed => "failed",
     }
@@ -354,6 +355,24 @@ mod tests {
         record_type: Option<RecordType>,
     ) {
         metrics.record_query(source, rcode, record_type, Duration::from_micros(500));
+    }
+
+    #[test]
+    fn local_answers_are_counted_under_their_own_source() {
+        let metrics = Metrics::new();
+
+        record(
+            &metrics,
+            Source::Local,
+            ResponseCode::NoError,
+            Some(RecordType::A),
+        );
+
+        let text = metrics.encode();
+        assert!(
+            text.contains(r#"dns_rs_queries_total{source="local",rcode="NOERROR",type="A"} 1"#),
+            "{text}"
+        );
     }
 
     #[test]

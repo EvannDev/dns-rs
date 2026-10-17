@@ -11,7 +11,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::blocking::Policy;
 use crate::config::ListConfig;
-use crate::config::{BlockingConfig, Config, ConfigError};
+use crate::config::{BlockingConfig, Config, ConfigError, LocalConfig};
 use crate::handler::Handler;
 use crate::http::ApiTokenSlot;
 use crate::metrics::{Metrics, ReloadResult};
@@ -36,7 +36,7 @@ pub enum TokenChange {
 pub enum ConfigChange {
     /// The configuration is the same as the last one seen.
     Unchanged,
-    /// The new blocking settings are in force. Settings listed in
+    /// The new live settings (`[blocking]`, `[local]`) are in force. Settings listed in
     /// `restart_required` changed too but were not applied.
     Applied { restart_required: Vec<&'static str> },
     /// The new configuration is invalid or unreadable; the previous one
@@ -128,6 +128,7 @@ impl<U: Upstream> Reloader<U> {
         store.update(results);
         let policy = build_policy(&config.blocking, &store).await?;
         install(&handler, &metrics, &status, policy);
+        install_local(&handler, &config.local);
         Ok(Self {
             handler,
             metrics,
@@ -211,6 +212,12 @@ impl<U: Upstream> Reloader<U> {
             }
             self.active.blocking = next.blocking.clone();
         }
+        // After blocking, which can still reject the configuration: nothing
+        // of a rejected one is applied.
+        if next.local != self.active.local {
+            install_local(&self.handler, &next.local);
+            self.active.local = next.local.clone();
+        }
         self.last_seen = next;
         self.metrics.record_config_reload(ReloadResult::Applied);
         tracing::info!("configuration reloaded");
@@ -278,6 +285,12 @@ impl<U: Upstream> Reloader<U> {
         }
         ConfigChange::Rejected(reason)
     }
+}
+
+fn install_local<U: Upstream>(handler: &Handler<U>, local: &LocalConfig) {
+    let records = local.records();
+    tracing::info!(names = records.len(), "local records loaded");
+    handler.set_local_records(records);
 }
 
 fn install<U: Upstream>(handler: &Handler<U>, metrics: &Metrics, status: &Status, policy: Policy) {
@@ -1144,6 +1157,66 @@ mod tests {
             }
 
             assert_eq!(current(&slot).as_deref(), Some(NEW));
+        }
+    }
+
+    mod local_records {
+        use super::*;
+
+        const NAS: &str = "[local]\nrecords = [{ name = 'nas.home.arpa', ip = '192.168.1.10' }]";
+        const PRINTER: &str =
+            "[local]\nrecords = [{ name = 'printer.home.arpa', ip = '192.168.1.20' }]";
+
+        async fn source(handler: &Handler<NoUpstream>, name: &str) -> Source {
+            let mut request = Message::new(1, MessageType::Query, OpCode::Query);
+            request.add_query(Query::query(Name::from_ascii(name).unwrap(), RecordType::A));
+            handler.handle(&request).await.source
+        }
+
+        #[tokio::test]
+        async fn records_are_in_force_from_startup() {
+            let setup = Setup::new();
+            setup.config(NAS);
+
+            let (_reloader, handler) = setup.reloader().await;
+
+            assert_eq!(source(&handler, "nas.home.arpa.").await, Source::Local);
+        }
+
+        // ADR 0016: [local] applies live, like [blocking].
+        #[tokio::test]
+        async fn changed_records_apply_without_a_restart() {
+            let setup = Setup::new();
+            setup.config(NAS);
+            let (mut reloader, handler) = setup.reloader().await;
+
+            setup.config(PRINTER);
+            let change = reloader.reload_config().await;
+
+            assert_eq!(
+                change,
+                ConfigChange::Applied {
+                    restart_required: vec![]
+                }
+            );
+            assert_eq!(source(&handler, "printer.home.arpa.").await, Source::Local);
+            assert_ne!(source(&handler, "nas.home.arpa.").await, Source::Local);
+        }
+
+        #[tokio::test]
+        async fn invalid_records_keep_the_previous_ones() {
+            let setup = Setup::new();
+            setup.config(NAS);
+            let (mut reloader, handler) = setup.reloader().await;
+
+            setup.config("[local]\nrecords = [{ name = 'nas', ip = '192.168.1.10' }]");
+            let change = reloader.reload_config().await;
+
+            assert!(
+                matches!(&change, ConfigChange::Rejected(reason) if reason.contains("local.records")),
+                "{change:?}"
+            );
+            assert_eq!(source(&handler, "nas.home.arpa.").await, Source::Local);
         }
     }
 }

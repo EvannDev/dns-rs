@@ -3,8 +3,9 @@
 # loaded into it:
 #   - `helm test` passes;
 #   - dns-rs resolves through its upstream (the cluster's DNS, so nothing
-#     leaves the cluster) and blocks a denied name;
-#   - a configuration change reaches every replica without a restart.
+#     leaves the cluster), blocks a denied name and answers a local record;
+#   - a configuration change (a new deny rule, a local record's new
+#     address) reaches every replica without a restart.
 #
 # Usage: e2e-kind.sh <kube context> <image repository:tag>
 # The context must be a kind cluster: the script installs and deletes there.
@@ -58,7 +59,8 @@ service="$release-dns-rs-dns"
 kubernetes_ip=$(kubectl --context "$context" -n default get service kubernetes -o jsonpath='{.spec.clusterIP}')
 eventually 10 "$kubernetes_ip" ask "$service" 53 kubernetes.default.svc.cluster.local
 eventually 10 0.0.0.0 ask "$service" 53 blocked.e2e.test
-echo "resolved through the upstream, blocked by the deny rule"
+eventually 10 192.0.2.10 ask "$service" 53 nas.e2e.test
+echo "resolved through the upstream, blocked by the deny rule, answered locally"
 
 echo "== hot reload on every replica"
 names_before=$(dns_pods metadata.name)
@@ -66,6 +68,8 @@ cat >"$work/config.toml" <<'TOML'
 [blocking]
 mode = "null"
 deny = ["blocked.e2e.test", "reloaded.e2e.test"]
+[local]
+records = [{ name = "nas.e2e.test", ip = "192.0.2.11" }]
 TOML
 h upgrade "$release" charts/dns-rs --reuse-values --set-file config="$work/config.toml" --wait --timeout 2m
 # The kubelet refreshes ConfigMap volumes within about a minute; dns-rs
@@ -75,6 +79,7 @@ port=$(dns_pods 'spec.containers[0].ports[?(@.name=="dns-udp")].containerPort' |
 [ -n "$port" ] || { echo "no dns-udp container port in the dns-rs pods" >&2; exit 1; }
 for ip in $(dns_pods status.podIP); do
   eventually 150 0.0.0.0 ask "$ip" "$port" reloaded.e2e.test
+  eventually 10 192.0.2.11 ask "$ip" "$port" nas.e2e.test
   echo "replica $ip reloaded"
 done
 [ "$(dns_pods metadata.name)" = "$names_before" ] || { echo "pods were replaced" >&2; exit 1; }
