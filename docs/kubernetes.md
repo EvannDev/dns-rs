@@ -57,6 +57,9 @@ If the release name already contains `dns-rs`, the prefix is not repeated
 | `networkPolicy.enabled` | `false` | Renders a NetworkPolicy (ingress only) |
 | `networkPolicy.dns.from` | `[]` | NetworkPolicyPeers allowed to query DNS (port 5353); empty means everyone |
 | `networkPolicy.http.from` | `[]` | NetworkPolicyPeers allowed on port 8080 (metrics, API); empty means nobody |
+| `tests.enabled` | `true` | Renders the `helm test` pod, see [Testing a release](#testing-a-release) |
+| `tests.image` | `registry.k8s.io/e2e-test-images/jessie-dnsutils:1.7` | Image with `dig` for the test pod |
+| `tests.query` | `example.com` | Name the test pod asks for |
 | `resources` | requests 50m CPU and 128Mi memory, limit 256Mi memory | Container resources |
 | `podAnnotations`, `podLabels`, `nodeSelector`, `tolerations`, `affinity` | empty | Passed to the pod template |
 
@@ -151,9 +154,28 @@ the `http` port. dns-rs starts its HTTP server before it loads the blocklists
 (up to 30 seconds per list), so liveness answers while lists load and
 readiness stays `503` until the first policy is installed.
 
+## Testing a release
+
+`helm test <release> --logs` runs a pod that queries the DNS Service with
+`dig`, first over UDP, then over TCP. It passes when dns-rs answers, whatever
+the answer: `dig` exits 0 on any response (including NXDOMAIN and SERVFAIL)
+and 9 when there is none, so the result does not depend on the upstream. Set
+`tests.enabled=false` to not render the pod.
+
+With `networkPolicy.dns.from` set, allow pods labelled
+`app.kubernetes.io/component=test`, or the test cannot reach the Service.
+
 ## Checks in CI
 
 The `chart` job runs `helm lint`, the helm-unittest suites in
 `charts/dns-rs/tests` and `kubeconform -strict` against Kubernetes 1.34 on
 the rendered manifests, with the default values and with every feature on
 (`charts/dns-rs/ci/all-features-values.yaml`).
+
+The `e2e` job installs the chart in a kind cluster with the image built by CI
+(`.github/scripts/e2e-kind.sh`). The upstream is the cluster's own DNS, so no
+query leaves the cluster. It checks `helm test`, resolution through the
+Service, blocking of a denied name, and hot reload: after a `helm upgrade`
+that changes `config`, every replica, queried on its pod IP, applies the new
+rule with the same pods and no restart. The script refuses any context that
+is not `kind-*`. The job is not a required check yet.
