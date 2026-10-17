@@ -1,8 +1,17 @@
 # Kubernetes
 
 The Helm chart in [`charts/dns-rs`](../charts/dns-rs) runs dns-rs as stateless
-replicas. It is not published to a chart repository yet: install it from a
-checkout of the repository.
+replicas. A `v*` tag publishes it as an OCI artifact (see
+[Releasing](releasing.md)):
+
+```sh
+helm install dns-rs oci://ghcr.io/evanndev/charts/dns-rs --version 0.1.0 \
+  --namespace dns --create-namespace
+```
+
+Replace `0.1.0` with the version you want. The package on GHCR may be private
+until its owner makes it public. To install the development version, use a
+checkout of the repository instead:
 
 ```sh
 helm install dns-rs charts/dns-rs --namespace dns --create-namespace
