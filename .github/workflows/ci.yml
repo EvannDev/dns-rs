@@ -124,7 +124,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
-      - run: helm lint charts/dns-rs
+      - name: Lint
+        # Strict: warnings fail too. Defaults, then every values file in ci/.
+        run: |
+          for values in "" charts/dns-rs/ci/*.yaml; do
+            helm lint charts/dns-rs --strict ${values:+-f "$values"}
+          done
       - name: Unit tests
         # As the runner's user, so the tool can write next to the checkout.
         run: >-
