@@ -17,8 +17,32 @@ env:
   RUSTFLAGS: -D warnings
 
 # The Rust version is pinned in rust-toolchain.toml, shared with local builds.
+#
+# A PR that only changes documentation (.github/scripts/ci-scope.sh) skips
+# the build checks. They still report, as skipped, which satisfies the
+# required checks; a workflow-level paths filter would leave them pending.
+# `!cancelled()`: if `changes` itself fails, everything runs.
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # On a PR, HEAD is the merge commit; its first parent is the base.
+          fetch-depth: 2
+          persist-credentials: false
+      # Pushes to main always run everything.
+      - id: scope
+        if: github.event_name == 'pull_request'
+        run: |
+          set -o pipefail
+          git diff --name-only HEAD^1 HEAD | .github/scripts/ci-scope.sh | tee -a "$GITHUB_OUTPUT"
+
   fmt:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -26,6 +50,8 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -34,15 +60,27 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    # Skipped step by step, not as a job: a skipped matrix job reports one
+    # "test" check instead of the required "test (<os>)" ones.
+    needs: changes
+    if: ${{ !cancelled() }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      CODE: ${{ needs.changes.outputs.code != 'false' }}
     steps:
-      - uses: actions/checkout@v7
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      - if: env.CODE == 'false'
+        run: echo "Documentation only, tests skipped"
+      - if: env.CODE == 'true'
+        uses: actions/checkout@v7
+      - if: env.CODE == 'true'
+        run: rustup toolchain install
+      - if: env.CODE == 'true'
+        uses: Swatinem/rust-cache@v2
+      - if: env.CODE == 'true'
+        run: cargo test --workspace
 
   agent-guards:
     runs-on: ubuntu-latest
@@ -51,11 +89,14 @@ jobs:
       - run: .claude/hooks/test-rust-refactor-guard.sh
       - run: .claude/hooks/test-devops-guard.sh
       - run: .github/scripts/test-claude-mode.sh
+      - run: .github/scripts/test-ci-scope.sh
       - run: .github/scripts/test-release.sh
       # The crate, the chart and its appVersion never drift apart.
       - run: .github/scripts/check-release.sh
 
   image:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -76,7 +117,7 @@ jobs:
             -p 127.0.0.1:15353:5353/udp -p 127.0.0.1:15353:5353/tcp -p 127.0.0.1:18080:8080 \
             -v "$RUNNER_TEMP/config:/etc/dns-rs:ro" -e DNS_RS_CONFIG=/etc/dns-rs/dns-rs.toml \
             dns-rs:ci
-          for i in $(seq 1 60); do curl -sf localhost:18080/readyz && break; sleep 0.5; done
+          for _ in $(seq 1 60); do curl -sf localhost:18080/readyz && break; sleep 0.5; done
           curl -sf localhost:18080/readyz
           # Blocked over TCP, resolved over UDP, API disabled without a token.
           # Resolution goes to the real default upstream: unlike `cargo test`,
@@ -96,6 +137,8 @@ jobs:
     # The chart and the image together in a kind cluster: helm test,
     # resolution, blocking, and hot reload on every replica
     # (.github/scripts/e2e-kind.sh).
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -120,6 +163,8 @@ jobs:
           kubectl -n dns-rs-e2e logs -l app.kubernetes.io/name=dns-rs --tail=50 --prefix || true
 
   chart:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
