@@ -8,11 +8,13 @@ use std::sync::Arc;
 use common::{query, start_server, udp_exchange};
 use std::time::Duration;
 
+use dns_rs::blocking::BlockingMode;
 use dns_rs::cache::DnsCache;
 use dns_rs::config::{ApiToken, Config};
 use dns_rs::handler::Handler;
 use dns_rs::http::{HttpState, serve_http};
 use dns_rs::metrics::Metrics;
+use dns_rs::status::Status;
 use dns_rs::upstream::DnsUpstream;
 use tokio::net::TcpListener;
 
@@ -48,7 +50,9 @@ async fn start_http_with(
 ) -> (SocketAddr, HttpState) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let state = HttpState::new(metrics, policy(), token);
+    let status = Status::new().with_cache_entries(|| 5);
+    status.set_policy(BlockingMode::NxDomain, 2);
+    let state = HttpState::new(metrics, policy(), Arc::new(status), token);
     tokio::spawn(serve_http(listener, state.clone()));
     (addr, state)
 }
@@ -294,4 +298,31 @@ async fn whole_api_prefix_requires_the_token() {
 
     assert_eq!(without, 401);
     assert_eq!(with, 404);
+}
+
+#[tokio::test]
+async fn status_reports_the_replica_state() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    let response = api_get(addr, "/api/v1/status", Some(&format!("Bearer {TOKEN}"))).await;
+
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "blocking": {"mode": "nxdomain", "rules": 2},
+            "config": {"valid": true},
+            "cache": {"entries": 5},
+            "lists": [],
+        })
+    );
+}
+
+#[tokio::test]
+async fn status_requires_the_token() {
+    let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
+
+    assert_eq!(api_get(addr, "/api/v1/status", None).await.status(), 401);
 }
