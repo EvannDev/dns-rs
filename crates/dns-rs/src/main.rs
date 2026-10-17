@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use arc_swap::ArcSwap;
 use dns_rs::cache::DnsCache;
 use dns_rs::config::Config;
 use dns_rs::handler::Handler;
-use dns_rs::http::{HttpState, serve_http};
+use dns_rs::http::{ApiTokenSlot, HttpState, serve_http};
 use dns_rs::metrics::Metrics;
 use dns_rs::reload::{CONFIG_POLL_INTERVAL, Reloader};
 use dns_rs::server::{serve_tcp, serve_udp};
@@ -23,8 +24,10 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env()?;
     // Before loading lists: a bad token must fail startup at once.
-    let api_token = config.api_token(|var| std::env::var(var).ok())?;
-    if api_token.is_none() {
+    let api_token: ApiTokenSlot = Arc::new(ArcSwap::from_pointee(
+        config.api_token(|var| std::env::var(var).ok())?,
+    ));
+    if api_token.load().is_none() {
         tracing::info!("API disabled: set DNS_RS_API_TOKEN or http.api_token_file to enable it");
     }
     let upstream = DnsUpstream::new(config.upstream.server, config.upstream.timeout);
@@ -49,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&metrics),
         handler.clone(),
         Arc::clone(&status),
-        api_token,
+        Arc::clone(&api_token),
     );
     let mut http_server = tokio::spawn(serve_http(http, http_state.clone()));
 
@@ -64,7 +67,9 @@ async fn main() -> anyhow::Result<()> {
         config.clone(),
         |var| std::env::var(var).ok(),
     )
-    .await?;
+    .await?
+    // A rotated token file reaches the API without a restart.
+    .with_api_token(api_token);
     // Kept until shutdown: the reload loop stops when every sender is gone.
     let (reload_now, reload_requests) = mpsc::channel(1);
     #[cfg(unix)]

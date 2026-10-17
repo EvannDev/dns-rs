@@ -413,6 +413,9 @@ impl Config {
         if let Some(listen) = env_value(lookup, "DNS_RS_HTTP_LISTEN")? {
             self.http.listen = listen;
         }
+        if let Some(path) = env_value::<PathBuf>(lookup, "DNS_RS_API_TOKEN_FILE")? {
+            self.http.api_token_file = Some(path);
+        }
         if let Some(DnsServer(server)) = env_value(lookup, "DNS_RS_UPSTREAM")? {
             self.upstream.server = server;
         }
@@ -893,6 +896,20 @@ mod tests {
             let token = config.api_token(env(&[])).unwrap().unwrap();
 
             assert!(token.matches(TOKEN));
+        }
+
+        // The Helm chart refuses [http] in the reloaded configuration, so the
+        // token file path also comes from the environment.
+        #[test]
+        fn token_file_path_comes_from_the_environment() {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            writeln!(file, "{TOKEN}").unwrap();
+            let path = file.path().to_str().unwrap();
+
+            let config = Config::load(env(&[("DNS_RS_API_TOKEN_FILE", path)])).unwrap();
+
+            assert_eq!(config.http.api_token_file.as_deref(), Some(file.path()));
+            assert!(config.api_token(env(&[])).unwrap().unwrap().matches(TOKEN));
         }
 
         #[test]

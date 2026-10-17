@@ -8,11 +8,12 @@ use std::sync::Arc;
 use common::{query, start_server, udp_exchange};
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use dns_rs::blocking::BlockingMode;
 use dns_rs::cache::DnsCache;
 use dns_rs::config::{ApiToken, Config};
 use dns_rs::handler::Handler;
-use dns_rs::http::{HttpState, serve_http};
+use dns_rs::http::{ApiTokenSlot, HttpState, serve_http};
 use dns_rs::metrics::Metrics;
 use dns_rs::status::Status;
 use dns_rs::upstream::DnsUpstream;
@@ -47,6 +48,13 @@ async fn start_http(metrics: Arc<Metrics>) -> (SocketAddr, HttpState) {
 async fn start_http_with(
     metrics: Arc<Metrics>,
     token: Option<ApiToken>,
+) -> (SocketAddr, HttpState) {
+    start_http_with_slot(metrics, Arc::new(ArcSwap::from_pointee(token))).await
+}
+
+async fn start_http_with_slot(
+    metrics: Arc<Metrics>,
+    token: ApiTokenSlot,
 ) -> (SocketAddr, HttpState) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -325,4 +333,24 @@ async fn status_requires_the_token() {
     let (addr, _state) = start_http(Arc::new(Metrics::new())).await;
 
     assert_eq!(api_get(addr, "/api/v1/status", None).await.status(), 401);
+}
+
+// A rotated token file is read again by the Reloader, which swaps the token
+// here: requests must use the new one at once, without a restart.
+#[tokio::test]
+async fn swapped_token_applies_to_the_next_request() {
+    let slot: ApiTokenSlot = Arc::new(ArcSwap::from_pointee(Some(api_token(TOKEN))));
+    let (addr, _state) = start_http_with_slot(Arc::new(Metrics::new()), Arc::clone(&slot)).await;
+    let new_token = "rotated-token-0123456789";
+
+    slot.store(Arc::new(Some(api_token(new_token))));
+
+    let old = api_get(addr, "/api/v1/status", Some(&format!("Bearer {TOKEN}")))
+        .await
+        .status();
+    let new = api_get(addr, "/api/v1/status", Some(&format!("Bearer {new_token}")))
+        .await
+        .status();
+    assert_eq!(old, 401);
+    assert_eq!(new, 200);
 }

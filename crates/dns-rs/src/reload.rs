@@ -13,10 +13,23 @@ use crate::blocking::Policy;
 use crate::config::ListConfig;
 use crate::config::{BlockingConfig, Config, ConfigError};
 use crate::handler::Handler;
+use crate::http::ApiTokenSlot;
 use crate::metrics::{Metrics, ReloadResult};
 use crate::sources::{FetchError, ListLoader, ListResult, ListStore};
 use crate::status::Status;
 use crate::upstream::Upstream;
+
+/// What reading the API token file again did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenChange {
+    /// Same token, or no token file to read.
+    Unchanged,
+    /// The new token is in force.
+    Rotated,
+    /// The file is missing or holds an invalid token; the previous token
+    /// stays in force.
+    Rejected(String),
+}
 
 /// What a configuration reload did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,9 +63,46 @@ pub struct Reloader<U> {
     /// The last rejection logged, to log a broken file once, not every poll.
     last_rejection: Option<String>,
     store: ListStore,
+    api_token: Option<ApiTokenSlot>,
+    /// The last token rejection logged, to log a broken file once.
+    last_token_rejection: Option<String>,
 }
 
 impl<U: Upstream> Reloader<U> {
+    /// Also keeps `slot` in step with the API token file, if one is set.
+    #[must_use]
+    pub fn with_api_token(mut self, slot: ApiTokenSlot) -> Self {
+        self.api_token = Some(slot);
+        self
+    }
+
+    /// Reads the API token again: a rotated Secret, mounted as a file,
+    /// reaches every replica without a restart.
+    pub fn reload_api_token(&mut self) -> TokenChange {
+        let Some(slot) = &self.api_token else {
+            return TokenChange::Unchanged;
+        };
+        let token = match self.active.api_token(&self.lookup) {
+            Ok(token) => token,
+            Err(error) => {
+                let reason = error.to_string();
+                if self.last_token_rejection.as_ref() != Some(&reason) {
+                    // The message names the source, never the token.
+                    tracing::error!(error = %reason, "API token rejected, keeping the previous one");
+                    self.last_token_rejection = Some(reason.clone());
+                }
+                return TokenChange::Rejected(reason);
+            }
+        };
+        self.last_token_rejection = None;
+        if token.is_none() || **slot.load() == token {
+            return TokenChange::Unchanged;
+        }
+        slot.store(Arc::new(token));
+        tracing::info!("API token rotated");
+        TokenChange::Rotated
+    }
+
     /// Loads the blocklists of `config` and installs the first policy.
     /// `lookup` reads environment variables, as [`Config::load`] does.
     pub async fn start(
@@ -80,6 +130,8 @@ impl<U: Upstream> Reloader<U> {
             last_seen: config,
             last_rejection: None,
             store,
+            api_token: None,
+            last_token_rejection: None,
         })
     }
 
@@ -186,11 +238,13 @@ impl<U: Upstream> Reloader<U> {
             tokio::select! {
                 _ = poll_timer.tick() => {
                     self.reload_config().await;
+                    self.reload_api_token();
                 }
                 message = reload_now.recv() => match message {
                     Some(()) => {
                         tracing::info!("reload requested");
                         self.reload_config().await;
+                        self.reload_api_token();
                     }
                     None => return,
                 },
@@ -924,6 +978,110 @@ mod tests {
 
             assert!(!broken);
             assert!(setup.status.report().config.valid);
+        }
+    }
+
+    mod api_token {
+        use arc_swap::ArcSwap;
+
+        use super::*;
+
+        const OLD: &str = "old-token-0123456789";
+        const NEW: &str = "new-token-0123456789";
+
+        async fn reloader_with_token(setup: &Setup) -> (Reloader<NoUpstream>, ApiTokenSlot) {
+            setup.write("token", OLD);
+            setup.config(&format!(
+                "[http]\napi_token_file = '{}'",
+                setup.path("token").display()
+            ));
+            let (reloader, _handler) = setup.reloader().await;
+            let config = reloader.config().clone();
+            let slot: ApiTokenSlot =
+                Arc::new(ArcSwap::from_pointee(config.api_token(|_| None).unwrap()));
+            (reloader.with_api_token(Arc::clone(&slot)), slot)
+        }
+
+        fn current(slot: &ApiTokenSlot) -> Option<String> {
+            let token = slot.load();
+            [OLD, NEW]
+                .into_iter()
+                .find(|t| token.as_ref().as_ref().is_some_and(|k| k.matches(t)))
+                .map(str::to_owned)
+        }
+
+        #[tokio::test]
+        async fn rotated_token_file_takes_effect() {
+            let setup = Setup::new();
+            let (mut reloader, slot) = reloader_with_token(&setup).await;
+
+            setup.write("token", NEW);
+            let change = reloader.reload_api_token();
+
+            assert_eq!(change, TokenChange::Rotated);
+            assert_eq!(current(&slot).as_deref(), Some(NEW));
+        }
+
+        #[tokio::test]
+        async fn same_token_is_unchanged() {
+            let setup = Setup::new();
+            let (mut reloader, slot) = reloader_with_token(&setup).await;
+
+            assert_eq!(reloader.reload_api_token(), TokenChange::Unchanged);
+            assert_eq!(current(&slot).as_deref(), Some(OLD));
+        }
+
+        #[tokio::test]
+        async fn invalid_rotated_token_keeps_the_previous_one() {
+            let setup = Setup::new();
+            let (mut reloader, slot) = reloader_with_token(&setup).await;
+
+            setup.write("token", "short");
+            let change = reloader.reload_api_token();
+
+            assert!(
+                matches!(&change, TokenChange::Rejected(reason) if reason.contains("16")),
+                "{change:?}"
+            );
+            assert_eq!(current(&slot).as_deref(), Some(OLD));
+        }
+
+        // A Secret being recreated briefly removes the file: keep serving.
+        #[tokio::test]
+        async fn missing_token_file_keeps_the_previous_token() {
+            let setup = Setup::new();
+            let (mut reloader, slot) = reloader_with_token(&setup).await;
+
+            remove(&setup.path("token"));
+            let change = reloader.reload_api_token();
+
+            assert!(matches!(change, TokenChange::Rejected(_)), "{change:?}");
+            assert_eq!(current(&slot).as_deref(), Some(OLD));
+        }
+
+        #[tokio::test]
+        async fn without_a_slot_nothing_is_read() {
+            let setup = Setup::new();
+            setup.config("");
+            let (mut reloader, _handler) = setup.reloader().await;
+
+            assert_eq!(reloader.reload_api_token(), TokenChange::Unchanged);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn token_is_read_again_at_each_poll() {
+            let setup = Setup::new();
+            let (reloader, slot) = reloader_with_token(&setup).await;
+            let (_reload_now, receiver) = mpsc::channel(1);
+            tokio::spawn(reloader.run(Duration::from_secs(10), receiver));
+
+            setup.write("token", NEW);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(11);
+            while tokio::time::Instant::now() < deadline && current(&slot).as_deref() != Some(NEW) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+
+            assert_eq!(current(&slot).as_deref(), Some(NEW));
         }
     }
 }
