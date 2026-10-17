@@ -39,8 +39,8 @@ contradicting them.
 
 | Agent | Runs | Role |
 |---|---|---|
-| Review (`.github/workflows/claude-review.yml`) | Every PR | Reviews against these rules |
-| `docs` (`.claude/agents/docs.md`) | Every PR, weekly | Owns and commits the documentation |
+| `docs` (`.claude/agents/docs.md`) | Every PR (`claude-pr.yml`, first), weekly (`claude-docs.yml`) | Owns and commits the documentation |
+| Review (`.github/workflows/claude-pr.yml`) | Every PR, after `docs` | Reviews against these rules; full review first, then each push from the last reviewed commit |
 | `rust-refactor` (`.claude/agents/rust-refactor.md`) | On demand, locally | Behaviour-preserving refactoring audits and implementations; never commits |
 | `devops` (`.claude/agents/devops.md`) | On demand, locally | CI workflows, container image, Helm chart, kind checks; kind contexts only, never publishes or commits |
 
