@@ -24,15 +24,9 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if or .Values.podAnnotations .Values.api.token }}
+      {{- with .Values.podAnnotations }}
       annotations:
-        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-        {{- end }}
-        {{- if .Values.api.token }}
-        # The token is read at startup: a new one must restart the pods.
-        checksum/api-token: {{ .Values.api.token | sha256sum }}
-        {{- end }}
       {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
@@ -69,12 +63,10 @@ spec:
             - name: DNS_RS_CACHE_SIZE
               value: {{ .Values.cache.size | int64 | quote }}
             {{- if or .Values.api.token .Values.api.existingSecret }}
-            # By reference: the token never appears in the pod spec.
-            - name: DNS_RS_API_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.api.existingSecret | default (printf "%s-api" (include "dns-rs.fullname" .)) }}
-                  key: {{ if .Values.api.existingSecret }}{{ .Values.api.existingSecretKey }}{{ else }}token{{ end }}
+            # A file dns-rs reads again: the kubelet updates it when the
+            # Secret changes, so rotation needs no restart.
+            - name: DNS_RS_API_TOKEN_FILE
+              value: /run/secrets/dns-rs/api-token
             {{- end }}
           ports:
             - name: dns-udp
@@ -107,10 +99,23 @@ spec:
             - name: config
               mountPath: /etc/dns-rs
               readOnly: true
+            {{- if or .Values.api.token .Values.api.existingSecret }}
+            - name: api-token
+              mountPath: /run/secrets/dns-rs
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "dns-rs.fullname" . }}
+        {{- if or .Values.api.token .Values.api.existingSecret }}
+        - name: api-token
+          secret:
+            secretName: {{ .Values.api.existingSecret | default (printf "%s-api" (include "dns-rs.fullname" .)) }}
+            items:
+              - key: {{ if .Values.api.existingSecret }}{{ .Values.api.existingSecretKey }}{{ else }}token{{ end }}
+                path: api-token
+        {{- end }}
       {{- if .Values.topologySpread.enabled }}
       topologySpreadConstraints:
         - maxSkew: 1

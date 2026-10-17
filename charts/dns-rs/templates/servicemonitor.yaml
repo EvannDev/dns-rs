@@ -1,4 +1,7 @@
 {{- if .Values.serviceMonitor.enabled }}
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.http.from) }}
+{{- fail "serviceMonitor.enabled with networkPolicy.enabled needs networkPolicy.http.from to let Prometheus reach port 8080" }}
+{{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

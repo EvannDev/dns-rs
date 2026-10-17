@@ -31,11 +31,12 @@ config: |
 
 # The API (/api/v1/...) needs a bearer token; without one it is disabled.
 api:
+  # The token is mounted as a file that dns-rs reads again: rotating it
+  # reaches every replica within about a minute, without a restart.
   # Token created as a Secret by the chart. Prefer existingSecret: a token in
-  # values ends up in Helm's release history. Changing it rolls the pods.
+  # values ends up in Helm's release history.
   token: ""
-  # Or a Secret you manage (sealed, external-secrets…). Rotating its content
-  # does not restart pods: run `kubectl rollout restart` afterwards.
+  # Or a Secret you manage (sealed, external-secrets…).
   existingSecret: ""
   existingSecretKey: token
 
