@@ -2,9 +2,10 @@
 # Every section and key is optional; the values below are the defaults
 # unless stated otherwise.
 #
-# The file is read again every 10 s and on SIGHUP. [blocking] changes apply
-# at once; server.listen, http.listen, upstream.* and cache.size need a restart (logged
-# once, not applied). An invalid file is rejected and the previous
+# The file is read again every 10 s and on SIGHUP. [blocking], [local] and
+# [[forward]] changes apply at once; server.listen, http.listen,
+# http.api_token_file, upstream.* and cache.size need a restart (logged once,
+# not applied). An invalid file is rejected and the previous
 # configuration keeps working.
 
 [server]
