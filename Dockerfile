@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # No shell, no package manager; CA certificates for HTTPS blocklists; runs as
 # the nonroot user (UID 65532).
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:83b9b50586253821cf63ffcec87d3d94265a093ad30da232039af962dd8f4edf
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:08476c244888bfb425bae1ae4dd7c17f093e972aab8426883d97f3c6f280f7c1
 
 LABEL org.opencontainers.image.title="dns-rs" \
       org.opencontainers.image.description="Network-wide DNS sinkhole in Rust" \
